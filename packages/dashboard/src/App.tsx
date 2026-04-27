@@ -1,0 +1,22 @@
+import { Navigate, Route, Routes } from 'react-router-dom'
+import { Layout } from './components/Layout'
+import { Overview } from './pages/Overview'
+import { ProjectDetail } from './pages/ProjectDetail'
+import { Sessions } from './pages/Sessions'
+import { PRs } from './pages/PRs'
+import { Settings } from './pages/Settings'
+
+export function App() {
+  return (
+    <Routes>
+      <Route element={<Layout />}>
+        <Route index element={<Overview />} />
+        <Route path="projects/:slug" element={<ProjectDetail />} />
+        <Route path="sessions" element={<Sessions />} />
+        <Route path="prs" element={<PRs />} />
+        <Route path="settings" element={<Settings />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
+    </Routes>
+  )
+}
