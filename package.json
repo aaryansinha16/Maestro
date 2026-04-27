@@ -1,0 +1,55 @@
+{
+  "name": "maestro",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Conductor for your codebases — autonomous project management for solo developers",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.8.1",
+  "bin": {
+    "maestro": "./bin/maestro.mjs"
+  },
+  "scripts": {
+    "dev": "concurrently -n conductor,dashboard -c blue,magenta \"pnpm --filter @maestro/conductor dev\" \"pnpm --filter @maestro/dashboard dev\"",
+    "dev:conductor": "pnpm --filter @maestro/conductor dev",
+    "dev:dashboard": "pnpm --filter @maestro/dashboard dev",
+    "build": "pnpm -r --workspace-concurrency=1 build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md,css,html}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,json,md,css,html}\"",
+    "cli": "tsx scripts/cli.ts",
+    "clean": "pnpm -r exec rm -rf dist node_modules .turbo && rm -rf node_modules"
+  },
+  "dependencies": {
+    "@maestro/api": "workspace:*",
+    "@maestro/shared": "workspace:*",
+    "cac": "^6.7.14"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.37.4",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  }
+}
