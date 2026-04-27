@@ -1,4 +1,58 @@
+# Dependencies
 node_modules/
+.pnpm-store/
+
+# Build artifacts
+dist/
+build/
+*.tsbuildinfo
+
+# Environment
 .env
 .env.local
+.env.*.local
+!.env.example
+
+# SQLite databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Working directories (per-project clones for autonomous sessions)
+work/
+/data/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Vite
+.vite/
+packages/dashboard/dist-ssr/
+packages/dashboard/*.local
+
+# Turbo / cache
+.turbo/
+.cache/
