@@ -121,9 +121,22 @@ export const ProjectStateSchema = z.object({
   path: z.string().default('.maestro/state.md'),
 })
 
+// Phase 1.5: filenames now carry seconds granularity. The legacy minute
+// pattern is still accepted on read so existing journals don't reject —
+// the worker migrates them via state-manager on first read.
+export const JOURNAL_FILENAME_RE = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.md$/
+export const JOURNAL_FILENAME_LEGACY_RE = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\.md$/
+
 export const JournalEntrySchema = z.object({
-  // Filename like "2026-04-15-08-00.md" — the timestamp slug.
-  filename: z.string().regex(/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\.md$/),
+  // Filename like "2026-04-15-08-00-12.md" — ISO-ish timestamp slug to
+  // seconds. Legacy minute-granularity filenames (no trailing seconds) are
+  // also accepted on read.
+  filename: z
+    .string()
+    .refine(
+      (s) => JOURNAL_FILENAME_RE.test(s) || JOURNAL_FILENAME_LEGACY_RE.test(s),
+      { message: 'must be YYYY-MM-DD-HH-MM-SS.md (or legacy YYYY-MM-DD-HH-MM.md)' },
+    ),
   sessionId: z.string().min(1).nullable(),
   // ISO timestamp parsed from the filename.
   timestamp: z.string().datetime(),

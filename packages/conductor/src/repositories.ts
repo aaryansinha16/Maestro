@@ -223,6 +223,126 @@ export class SessionRepository {
   }
 }
 
+// ─── Aggregations (Phase 1.5 cost tracking) ─────────────────────────
+
+export interface CostAggregations {
+  /** Sum of cost_cents for completed sessions in the rolling 30 days. */
+  monthCents: number
+  /** Sum of cost_cents today (UTC). */
+  todayCents: number
+  /** Per-project breakdown for the rolling 30-day window. */
+  perProject: Array<{
+    projectId: string
+    projectSlug: string
+    sessionCount: number
+    monthCents: number
+    /** Sessions that produced a merged-style PR (status=completed && pr_number IS NOT NULL). */
+    prCount: number
+    /** Cost ÷ PRs (the "did Maestro earn its keep?" metric). null when no PRs. */
+    centsPerPr: number | null
+  }>
+  /** 30 days of daily totals, oldest → newest. Includes zero-cost days. */
+  dailySeries: Array<{ date: string; cents: number }>
+}
+
+interface PerProjectRow {
+  project_id: string
+  project_slug: string
+  session_count: number
+  month_cents: number
+  pr_count: number
+}
+
+interface DailyRow {
+  day: string
+  cents: number
+}
+
+export class CostRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  aggregate(): CostAggregations {
+    const monthCutoff = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const todayStart = new Date()
+    todayStart.setUTCHours(0, 0, 0, 0)
+    const todayCutoff = todayStart.toISOString()
+
+    const monthCents =
+      (
+        this.db
+          .prepare<[string], { sum: number | null }>(
+            'SELECT COALESCE(SUM(cost_cents), 0) AS sum FROM sessions WHERE started_at >= ?',
+          )
+          .get(monthCutoff) as { sum: number | null }
+      ).sum ?? 0
+
+    const todayCents =
+      (
+        this.db
+          .prepare<[string], { sum: number | null }>(
+            'SELECT COALESCE(SUM(cost_cents), 0) AS sum FROM sessions WHERE started_at >= ?',
+          )
+          .get(todayCutoff) as { sum: number | null }
+      ).sum ?? 0
+
+    const perProjectRows = this.db
+      .prepare<[string], PerProjectRow>(
+        `SELECT
+           p.id AS project_id,
+           p.slug AS project_slug,
+           COUNT(s.id) AS session_count,
+           COALESCE(SUM(s.cost_cents), 0) AS month_cents,
+           SUM(CASE WHEN s.pr_number IS NOT NULL THEN 1 ELSE 0 END) AS pr_count
+         FROM projects p
+         LEFT JOIN sessions s
+           ON s.project_id = p.id AND s.started_at >= ?
+         GROUP BY p.id, p.slug
+         ORDER BY month_cents DESC`,
+      )
+      .all(monthCutoff)
+
+    const perProject = perProjectRows.map((r) => ({
+      projectId: r.project_id,
+      projectSlug: r.project_slug,
+      sessionCount: r.session_count,
+      monthCents: r.month_cents,
+      prCount: r.pr_count,
+      centsPerPr: r.pr_count > 0 ? Math.round(r.month_cents / r.pr_count) : null,
+    }))
+
+    const dailyRows = this.db
+      .prepare<[string], DailyRow>(
+        `SELECT substr(started_at, 1, 10) AS day, COALESCE(SUM(cost_cents), 0) AS cents
+         FROM sessions
+         WHERE started_at >= ?
+         GROUP BY day
+         ORDER BY day`,
+      )
+      .all(monthCutoff)
+
+    const dailySeries = padDailySeries(dailyRows, monthCutoff)
+
+    return { monthCents, todayCents, perProject, dailySeries }
+  }
+}
+
+function padDailySeries(
+  rows: DailyRow[],
+  cutoffIso: string,
+): Array<{ date: string; cents: number }> {
+  const byDay = new Map(rows.map((r) => [r.day, r.cents]))
+  const result: Array<{ date: string; cents: number }> = []
+  const cutoffDate = new Date(cutoffIso)
+  cutoffDate.setUTCHours(0, 0, 0, 0)
+  const today = new Date()
+  today.setUTCHours(0, 0, 0, 0)
+  for (let d = new Date(cutoffDate); d <= today; d.setUTCDate(d.getUTCDate() + 1)) {
+    const key = d.toISOString().slice(0, 10)
+    result.push({ date: key, cents: byDay.get(key) ?? 0 })
+  }
+  return result
+}
+
 function rowToSession(row: SessionRow): Session {
   return SessionSchema.parse({
     id: row.id,

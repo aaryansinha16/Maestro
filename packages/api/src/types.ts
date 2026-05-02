@@ -13,6 +13,7 @@ import type {
   GetSessionParamsSchema,
   GetSessionResponseSchema,
   SessionLogResponseSchema,
+  CostAggregationsResponseSchema,
   ListPullRequestsQuerySchema,
   ListPullRequestsResponseSchema,
 } from './routes.js'
@@ -30,6 +31,7 @@ export type ListSessionsResponse = z.infer<typeof ListSessionsResponseSchema>
 export type GetSessionParams = z.infer<typeof GetSessionParamsSchema>
 export type GetSessionResponse = z.infer<typeof GetSessionResponseSchema>
 export type SessionLogResponse = z.infer<typeof SessionLogResponseSchema>
+export type CostAggregationsResponse = z.infer<typeof CostAggregationsResponseSchema>
 
 export type ListPullRequestsQuery = z.infer<typeof ListPullRequestsQuerySchema>
 export type ListPullRequestsResponse = z.infer<typeof ListPullRequestsResponseSchema>

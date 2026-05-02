@@ -4,11 +4,25 @@ import type { GetSessionResponse, SessionLogResponse } from '@maestro/api'
 import { useApi } from '../hooks/useApi'
 import { formatDateTime, formatDuration, gateTag, statusLabel } from '../lib/format'
 
+interface PromptResponse {
+  available: boolean
+  prompt: string
+  reason?: string
+}
+
+interface DiffResponse {
+  available: boolean
+  diff: string
+  reason?: string
+}
+
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>()
   const api = useApi()
   const [data, setData] = useState<GetSessionResponse | null>(null)
   const [log, setLog] = useState<SessionLogResponse | null>(null)
+  const [prompt, setPrompt] = useState<PromptResponse | null>(null)
+  const [diff, setDiff] = useState<DiffResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -17,11 +31,15 @@ export function SessionDetail() {
     void Promise.all([
       api.get<GetSessionResponse>(`/api/sessions/${encodeURIComponent(id)}`),
       api.get<SessionLogResponse>(`/api/sessions/${encodeURIComponent(id)}/log`),
+      api.get<PromptResponse>(`/api/sessions/${encodeURIComponent(id)}/prompt`),
+      api.get<DiffResponse>(`/api/sessions/${encodeURIComponent(id)}/diff`),
     ])
-      .then(([detail, l]) => {
+      .then(([detail, l, p, d]) => {
         if (cancelled) return
         setData(detail)
         setLog(l)
+        setPrompt(p)
+        setDiff(d)
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'unknown error')
@@ -108,6 +126,38 @@ export function SessionDetail() {
         </div>
       </div>
 
+      <details className="panel">
+        <summary className="panel-header cursor-pointer">
+          <h3 className="font-medium text-white">Constructed prompt</h3>
+          <span className="text-xs text-navy-400">
+            {prompt?.available
+              ? `${prompt.prompt.length.toLocaleString()} chars · click to expand`
+              : 'unavailable'}
+          </span>
+        </summary>
+        <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap px-5 py-4 text-xs leading-relaxed text-navy-200">
+          {prompt?.available ? prompt.prompt : prompt?.reason ?? '(unavailable)'}
+        </pre>
+      </details>
+
+      <div className="panel">
+        <header className="panel-header">
+          <h3 className="font-medium text-white">Diff (committed by the agent)</h3>
+          {diff?.available ? (
+            <span className="text-xs text-navy-400">
+              {diff.diff.split('\n').length.toLocaleString()} lines
+            </span>
+          ) : null}
+        </header>
+        {diff?.available ? (
+          <DiffView diff={diff.diff} />
+        ) : (
+          <p className="px-5 py-4 text-sm text-navy-400">
+            {diff?.reason ?? '(diff unavailable — working clone may have been gc’d)'}
+          </p>
+        )}
+      </div>
+
       <div className="panel">
         <header className="panel-header">
           <h3 className="font-medium text-white">Log tail</h3>
@@ -124,6 +174,36 @@ export function SessionDetail() {
       </div>
     </section>
   )
+}
+
+// Tiny diff renderer. Not a full syntax highlighter — keeps the bundle
+// small. Colors lines by their first character.
+function DiffView({ diff }: { diff: string }) {
+  const lines = diff.split('\n')
+  return (
+    <pre className="max-h-[520px] overflow-auto px-5 py-4 font-mono text-xs leading-relaxed">
+      {lines.map((line, i) => {
+        const cls = colorForLine(line)
+        return (
+          <div key={i} className={cls}>
+            {line || ' '}
+          </div>
+        )
+      })}
+    </pre>
+  )
+}
+
+function colorForLine(line: string): string {
+  if (line.startsWith('+++') || line.startsWith('---')) return 'text-amber-300'
+  if (line.startsWith('+')) return 'text-success-400'
+  if (line.startsWith('-')) return 'text-danger'
+  if (line.startsWith('@@')) return 'text-amber-500'
+  if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('commit '))
+    return 'text-navy-300'
+  if (line.startsWith('Author') || line.startsWith('AuthorDate') || line.startsWith('Commit'))
+    return 'text-navy-400'
+  return 'text-navy-200'
 }
 
 function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {

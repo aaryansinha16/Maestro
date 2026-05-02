@@ -13,17 +13,29 @@ import { existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import {
+  CostAggregationsResponseSchema,
   HealthResponseSchema,
   ListProjectsResponseSchema,
   ListSessionsResponseSchema,
 } from '@maestro/api'
 import {
+  COST_WARN_BUDGET_FRACTION,
+  DEFAULT_MONTHLY_BUDGET_USD,
   SESSION_LOG_TAIL_LINES,
+  buildSessionPrompt,
   isMaestroError,
 } from '@maestro/shared'
 import type Database from 'better-sqlite3'
+import { execa } from 'execa'
 import { logger } from './logger.js'
-import { ProjectRepository, QualityGateRepository, SessionRepository } from './repositories.js'
+import { listRecentJournal, readMaestroDir } from './state-manager.js'
+import { workingDirFor, parseNeverTouchSection } from './worker.js'
+import {
+  CostRepository,
+  ProjectRepository,
+  QualityGateRepository,
+  SessionRepository,
+} from './repositories.js'
 
 export interface ServerDeps {
   /** Best-effort uptime baseline for the /health response. */
@@ -32,6 +44,10 @@ export interface ServerDeps {
   version: string
   /** SQLite handle. */
   db: Database.Database
+  /** Where working clones live. Used to compute prompts/diffs on demand. */
+  dataDir: string
+  /** Surfaced as the developer name in reconstructed prompts. */
+  developerName: string
 }
 
 export function buildServer(deps: ServerDeps): Hono {
@@ -39,6 +55,7 @@ export function buildServer(deps: ServerDeps): Hono {
   const projects = new ProjectRepository(deps.db)
   const sessions = new SessionRepository(deps.db)
   const gates = new QualityGateRepository(deps.db)
+  const costs = new CostRepository(deps.db)
 
   app.use('*', honoLogger((msg) => logger.debug(msg)))
   app.use('/api/*', cors({ origin: '*' }))
@@ -125,7 +142,126 @@ export function buildServer(deps: ServerDeps): Hono {
     })
   })
 
-  app.get('/api/prs', (c) => c.json({ pullRequests: [] }))
+  app.get('/api/sessions/:id/prompt', async (c) => {
+    const id = c.req.param('id')
+    const session = sessions.findById(id)
+    if (!session) {
+      return c.json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } }, 404)
+    }
+    const project = projects.findById(session.projectId)
+    if (!project) {
+      return c.json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Project gone' } }, 404)
+    }
+    const wd = workingDirFor(deps.dataDir, project.slug)
+    try {
+      const m = await readMaestroDir(wd)
+      const journal = await listRecentJournal(wd, 3)
+      const prompt = buildSessionPrompt({
+        projectName: project.slug,
+        projectSlug: project.slug,
+        timeBudgetSeconds: project.autonomyConfig.timeBudget,
+        developerName: deps.developerName,
+        context: m.context,
+        state: m.state.raw,
+        recentJournal: journal.map((j) => ({ filename: j.filename, body: j.body })),
+        task: '',
+        qualityGates: project.autonomyConfig.qualityGates,
+        isFirstSession: journal.length === 0,
+        projectSpecificNeverTouch: parseNeverTouchSection(m.context),
+      })
+      return c.json({ available: true, prompt })
+    } catch (err) {
+      logger.warn({ err, slug: project.slug }, 'cannot reconstruct prompt for session')
+      return c.json({
+        available: false,
+        prompt: '',
+        reason:
+          'Working clone not present or .maestro/ unavailable. Re-run a session or run `maestro reset <slug>` first.',
+      })
+    }
+  })
+
+  app.get('/api/sessions/:id/diff', async (c) => {
+    const id = c.req.param('id')
+    const session = sessions.findById(id)
+    if (!session) {
+      return c.json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } }, 404)
+    }
+    if (!session.branchName) {
+      return c.json({ available: false, diff: '', reason: 'session produced no branch' })
+    }
+    const project = projects.findById(session.projectId)
+    if (!project) {
+      return c.json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Project gone' } }, 404)
+    }
+    const wd = workingDirFor(deps.dataDir, project.slug)
+    try {
+      const r = await execa(
+        'git',
+        ['log', '-p', '-1', '--no-color', `--format=fuller`, session.branchName],
+        { cwd: wd, reject: false, timeout: 8000 },
+      )
+      if (r.exitCode === 0) {
+        return c.json({ available: true, diff: r.stdout.toString() })
+      }
+      return c.json({ available: false, diff: '', reason: 'git log failed' })
+    } catch (err) {
+      return c.json({
+        available: false,
+        diff: '',
+        reason: err instanceof Error ? err.message : 'unknown error',
+      })
+    }
+  })
+
+  app.get('/api/costs', (c) => {
+    const agg = costs.aggregate()
+    const monthlyBudgetUsd = Number(
+      process.env['MAESTRO_BUDGET_USD'] ?? DEFAULT_MONTHLY_BUDGET_USD,
+    )
+    const monthlyBudgetCents = Math.round(monthlyBudgetUsd * 100)
+    const fraction =
+      monthlyBudgetCents > 0 ? agg.monthCents / monthlyBudgetCents : 0
+    if (fraction >= COST_WARN_BUDGET_FRACTION) {
+      logger.warn(
+        { monthCents: agg.monthCents, monthlyBudgetCents, fraction },
+        'monthly budget threshold reached',
+      )
+    }
+    const body = CostAggregationsResponseSchema.parse({
+      monthCents: agg.monthCents,
+      todayCents: agg.todayCents,
+      monthlyBudgetCents,
+      budgetFractionUsed: fraction,
+      perProject: agg.perProject,
+      dailySeries: agg.dailySeries,
+    })
+    return c.json(body)
+  })
+
+  app.get('/api/prs', (c) => {
+    // Fan out across projects with PRs from completed sessions.
+    const projectMap = new Map(projects.list().map((p) => [p.id, p]))
+    const list = sessions.list({ limit: 200 })
+    const pulls = list.sessions
+      .filter((s) => s.prNumber !== null)
+      .map((s) => {
+        const proj = projectMap.get(s.projectId)
+        return {
+          sessionId: s.id,
+          projectSlug: proj?.slug ?? s.projectId,
+          repoUrl: proj?.repoUrl ?? null,
+          prNumber: s.prNumber,
+          prUrl: s.prUrl,
+          branchName: s.branchName,
+          status: s.status,
+          startedAt: s.startedAt,
+          endedAt: s.endedAt,
+          costCents: s.costCents,
+        }
+      })
+    return c.json({ pullRequests: pulls })
+  })
 
   app.notFound((c) =>
     c.json({ error: { code: 'NOT_FOUND', message: `No route for ${c.req.path}` } }, 404),

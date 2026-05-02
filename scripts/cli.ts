@@ -16,6 +16,8 @@ import {
 import { runInit } from './cli/init.js'
 import { runAdd } from './cli/add.js'
 import { runRun, runInspect } from './cli/run.js'
+import { runDoctor } from './cli/doctor.js'
+import { runReset, runGc } from './cli/maintenance.js'
 import { failWith, loadEnvFromRepoRoot } from './cli/util.js'
 
 loadEnvFromRepoRoot()
@@ -46,6 +48,10 @@ cli
   .option('--branch-prefix <prefix>', 'Branch prefix for Maestro PRs', {
     default: 'maestro/',
   })
+  .option(
+    '--scaffold-context',
+    'Spawn a one-shot Claude run to draft a real context.md from the codebase (costs tokens)',
+  )
   .action(
     async (
       path: string,
@@ -59,6 +65,7 @@ cli
         timeBudgetMinutes?: number | string
         gates?: string
         branchPrefix?: string
+        scaffoldContext?: boolean
       },
     ) => {
       const tasks = Array.isArray(opts.task) ? opts.task : opts.task ? [opts.task] : []
@@ -89,6 +96,7 @@ cli
         timeBudgetMinutes: minutes,
         qualityGates: gates,
         branchPrefix: opts.branchPrefix,
+        scaffoldContext: opts.scaffoldContext ?? false,
       })
     },
   )
@@ -112,6 +120,30 @@ cli
   .command('inspect <session-id>', 'Show details and log tail for a session')
   .action(async (sessionId: string) => {
     await runInspect(sessionId)
+  })
+
+cli
+  .command('doctor [slug]', 'Health-check one or all registered projects')
+  .action(async (slug: string | undefined) => {
+    await runDoctor({ slug })
+  })
+
+cli
+  .command('reset <slug>', 'Blow away the working clone for a project')
+  .action(async (slug: string) => {
+    await runReset(slug)
+  })
+
+cli
+  .command('gc', 'Garbage-collect stale or orphan working clones')
+  .option('--dry-run', 'Print what would be removed without removing it')
+  .option(
+    '--days <n>',
+    'Override MAESTRO_WORKDIR_GC_DAYS (clones untouched longer than this are removed)',
+  )
+  .action(async (opts: { dryRun?: boolean; days?: string | number }) => {
+    const days = opts.days !== undefined ? Number(opts.days) : undefined
+    await runGc({ dryRun: opts.dryRun ?? false, days })
   })
 
 cli

@@ -21,7 +21,13 @@ async function main(): Promise<void> {
 
   const dbHandle = openDatabase({ dataDir: config.dataDir })
   const startedAt = Date.now()
-  const app = buildServer({ startedAt, version: PACKAGE_VERSION, db: dbHandle.db })
+  const app = buildServer({
+    startedAt,
+    version: PACKAGE_VERSION,
+    db: dbHandle.db,
+    dataDir: config.dataDir,
+    developerName: config.developerName,
+  })
 
   // Reclaim any stale per-project locks left behind by a previous crash.
   const { ProjectLockManager } = await import('./locks.js')
