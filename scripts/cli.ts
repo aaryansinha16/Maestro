@@ -27,6 +27,7 @@ import {
   runScheduleList,
   runSkips,
 } from './cli/scheduling.js'
+import { runFeedback } from './cli/feedback.js'
 import { failWith, loadEnvFromRepoRoot } from './cli/util.js'
 
 loadEnvFromRepoRoot()
@@ -225,6 +226,12 @@ cli
   .action(async (slug: string, opts: { limit?: number | string }) => {
     const n = Number(opts.limit ?? 20)
     await runSkips(slug, Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 20)
+  })
+
+cli
+  .command('feedback <slug>', 'Show unprocessed PR comments that will be fed into the next session')
+  .action(async (slug: string) => {
+    await runFeedback(slug)
   })
 
 cli.help()

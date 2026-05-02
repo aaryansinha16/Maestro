@@ -10,6 +10,7 @@ import {
   QualityGateRunSchema,
   JobSchema,
   ScheduledRunSchema,
+  PrFeedbackSchema,
   type Project,
   type ProjectAutonomyConfig,
   type Session,
@@ -24,6 +25,7 @@ import {
   type ScheduledRun,
   type ScheduledRunAction,
   type ScheduleSkipReason,
+  type PrFeedback,
   MaestroError,
 } from '@maestro/shared'
 
@@ -762,5 +764,143 @@ function rowToScheduledRun(row: ScheduledRunRow): ScheduledRun {
     skipReason: row.skip_reason,
     jobId: row.job_id,
     notes: row.notes,
+  })
+}
+
+// ─── Phase 4: PR feedback loop ───────────────────────────────────────
+
+interface PrFeedbackRow {
+  id: number
+  project_id: string
+  pr_number: number
+  pr_branch: string
+  comment_id: number
+  comment_body: string
+  comment_author: string
+  posted_at: string
+  fetched_at: string
+  processed_at: string | null
+  applied_in_session_id: string | null
+}
+
+export interface UpsertPrFeedbackInput {
+  projectId: string
+  prNumber: number
+  prBranch: string
+  commentId: number
+  commentBody: string
+  commentAuthor: string
+  postedAt: string
+}
+
+export class PrFeedbackRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  /**
+   * Insert a fetched comment if we haven't seen its comment_id before.
+   * Returns true if inserted (new), false if already known.
+   */
+  upsert(input: UpsertPrFeedbackInput): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT INTO pr_feedback
+           (project_id, pr_number, pr_branch, comment_id, comment_body, comment_author, posted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, comment_id) DO NOTHING`,
+      )
+      .run(
+        input.projectId,
+        input.prNumber,
+        input.prBranch,
+        input.commentId,
+        input.commentBody,
+        input.commentAuthor,
+        input.postedAt,
+      )
+    return result.changes > 0
+  }
+
+  pendingForProject(projectId: string): PrFeedback[] {
+    const rows = this.db
+      .prepare<[string], PrFeedbackRow>(
+        `SELECT * FROM pr_feedback
+         WHERE project_id = ? AND processed_at IS NULL
+         ORDER BY posted_at ASC`,
+      )
+      .all(projectId)
+    return rows.map(rowToPrFeedback)
+  }
+
+  /**
+   * Count of unprocessed feedback rows for the project. Cheaper than
+   * pendingForProject when the dashboard only wants a badge.
+   */
+  pendingCount(projectId: string): number {
+    const row = this.db
+      .prepare<[string], { c: number }>(
+        `SELECT COUNT(*) AS c FROM pr_feedback WHERE project_id = ? AND processed_at IS NULL`,
+      )
+      .get(projectId)
+    return row?.c ?? 0
+  }
+
+  markProcessedForPrs(input: {
+    projectId: string
+    prNumbers: number[]
+    sessionId: string
+    at?: string
+  }): number {
+    if (input.prNumbers.length === 0) return 0
+    const placeholders = input.prNumbers.map(() => '?').join(',')
+    const at = input.at ?? new Date().toISOString()
+    const result = this.db
+      .prepare(
+        `UPDATE pr_feedback
+           SET processed_at = ?, applied_in_session_id = ?
+         WHERE project_id = ? AND processed_at IS NULL AND pr_number IN (${placeholders})`,
+      )
+      .run(at, input.sessionId, input.projectId, ...input.prNumbers)
+    return result.changes
+  }
+
+  /**
+   * Returns the last sync time for a (project, pr) pair, or null if
+   * never synced. Used by the worker to honor the 5-minute rate-limit
+   * window when fetching new comments.
+   */
+  lastSyncedAt(projectId: string, prNumber: number): string | null {
+    const row = this.db
+      .prepare<[string, number], { last_synced_at: string }>(
+        `SELECT last_synced_at FROM pr_feedback_sync WHERE project_id = ? AND pr_number = ?`,
+      )
+      .get(projectId, prNumber)
+    return row?.last_synced_at ?? null
+  }
+
+  recordSync(projectId: string, prNumber: number, at?: string): void {
+    const stamp = at ?? new Date().toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO pr_feedback_sync (project_id, pr_number, last_synced_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(project_id, pr_number) DO UPDATE SET last_synced_at = excluded.last_synced_at`,
+      )
+      .run(projectId, prNumber, stamp)
+  }
+}
+
+function rowToPrFeedback(row: PrFeedbackRow): PrFeedback {
+  return PrFeedbackSchema.parse({
+    id: row.id,
+    projectId: row.project_id,
+    prNumber: row.pr_number,
+    prBranch: row.pr_branch,
+    commentId: row.comment_id,
+    commentBody: row.comment_body,
+    commentAuthor: row.comment_author,
+    postedAt: row.posted_at,
+    fetchedAt: row.fetched_at,
+    processedAt: row.processed_at,
+    appliedInSessionId: row.applied_in_session_id,
   })
 }

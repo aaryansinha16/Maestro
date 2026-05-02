@@ -22,6 +22,15 @@ export interface GitHubClient {
   mergePullRequest(input: MergePullRequestInput): Promise<MergePullRequestResult>
   addLabels(input: AddLabelsInput): Promise<void>
   listOpenPullRequests(repo: RepoCoords): Promise<PullRequest[]>
+  /**
+   * Fetch comments on a PR. Returns both issue-level comments and
+   * review-level comments collapsed into one chronological list, since
+   * for the feedback-loop use case the distinction does not matter.
+   *
+   * `since` is an ISO timestamp; the GitHub API only returns comments
+   * newer than this value when provided.
+   */
+  listPullRequestComments(input: ListPullRequestCommentsInput): Promise<PullRequestComment[]>
   verifyScopes(): Promise<void>
 }
 
@@ -58,6 +67,24 @@ export interface MergePullRequestInput {
 export type MergePullRequestResult =
   | { status: 'merged'; sha: string }
   | { status: 'blocked'; reason: string }
+
+export interface ListPullRequestCommentsInput {
+  repo: RepoCoords
+  prNumber: number
+  /** ISO timestamp; only comments posted after this are returned. */
+  since?: string
+}
+
+export interface PullRequestComment {
+  id: number
+  prNumber: number
+  /** GitHub login (e.g. `aaryansinha16`, `vercel[bot]`). */
+  author: string
+  body: string
+  postedAt: string
+  /** "issue" = top-level PR thread; "review" = inline review comment. */
+  kind: 'issue' | 'review'
+}
 
 // ─── Construction ────────────────────────────────────────────────────
 
@@ -170,6 +197,50 @@ export function createGitHubClient(input: CreateGitHubClientInput): GitHubClient
           }),
         )
       }, 'listOpenPullRequests')
+    },
+
+    async listPullRequestComments(req) {
+      // Issue + review comment endpoints are separate. We merge them so
+      // the worker doesn't have to care about the difference — for the
+      // feedback-loop use case both kinds carry the same signal.
+      const sinceArg = req.since ? { since: req.since } : {}
+      const [issue, review] = await runWithRetry(async () => {
+        const issueRes = await octokit.issues.listComments({
+          owner: req.repo.owner,
+          repo: req.repo.repo,
+          issue_number: req.prNumber,
+          per_page: 100,
+          ...sinceArg,
+        })
+        const reviewRes = await octokit.pulls.listReviewComments({
+          owner: req.repo.owner,
+          repo: req.repo.repo,
+          pull_number: req.prNumber,
+          per_page: 100,
+          ...sinceArg,
+        })
+        return [issueRes.data, reviewRes.data] as const
+      }, 'listPullRequestComments')
+
+      const issueComments: PullRequestComment[] = issue.map((c) => ({
+        id: c.id,
+        prNumber: req.prNumber,
+        author: c.user?.login ?? 'unknown',
+        body: c.body ?? '',
+        postedAt: c.created_at,
+        kind: 'issue' as const,
+      }))
+      const reviewComments: PullRequestComment[] = review.map((c) => ({
+        id: c.id,
+        prNumber: req.prNumber,
+        author: c.user?.login ?? 'unknown',
+        body: c.body ?? '',
+        postedAt: c.created_at,
+        kind: 'review' as const,
+      }))
+      return [...issueComments, ...reviewComments]
+        .filter((c) => c.body.trim().length > 0)
+        .sort((a, b) => a.postedAt.localeCompare(b.postedAt))
     },
 
     async verifyScopes() {

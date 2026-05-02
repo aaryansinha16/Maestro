@@ -12,7 +12,11 @@ import type { ProjectAutonomyConfig, QualityGate } from './types.js'
 //         (empty journal + empty tasks → no code changes, no gates, no PR)
 //         vs FIRST SESSION (concrete task in state.md → proceed normally).
 //         Wires context.md `## Never Touch` items into the prompt's rule #6.
-export const PROMPT_VERSION = '1.1.0'
+// 1.2.0 — Phase 4 / Sub 1: adds the FEEDBACK ON RECENT PRs section. When
+//         the worker fetches reviewer comments on the project's open Maestro
+//         PRs, they are surfaced to the agent so it can address them in the
+//         current session instead of waiting for state.md to be edited by hand.
+export const PROMPT_VERSION = '1.2.0'
 
 // ─── Time budgets (seconds) ──────────────────────────────────────────
 

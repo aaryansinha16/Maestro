@@ -52,6 +52,27 @@ export interface SessionPromptContext {
   daysSinceLastSession?: number
   /** Recent developer commits in last 24h, if any. Triggers caution preamble. */
   recentDeveloperCommits?: string
+  /**
+   * Phase 4 / Sub 1: pending reviewer comments on the project's open Maestro
+   * PRs. When non-empty the prompt grows a `== FEEDBACK ON RECENT PRs ==`
+   * section instructing the agent to address relevant items. Each entry is
+   * the comment as fetched from GitHub plus the PR + branch coordinates so
+   * the agent can locate the change.
+   */
+  pendingPrFeedback?: ReadonlyArray<PendingPrFeedbackEntry>
+}
+
+export interface PendingPrFeedbackEntry {
+  /** PR number on GitHub. */
+  prNumber: number
+  /** Feature branch the PR was opened from, e.g. `maestro/foo/auth-fix`. */
+  branchName: string
+  /** Comment author's GitHub login (already filtered against the allowlist). */
+  author: string
+  /** Comment body, verbatim. */
+  body: string
+  /** ISO timestamp of when the comment was posted on GitHub. */
+  postedAt: string
 }
 
 export interface FixupTurnPromptContext {
@@ -80,6 +101,8 @@ export function buildSessionPrompt(ctx: SessionPromptContext): string {
     .map((item) => `   - ${item}`)
     .join('\n')
 
+  const prFeedbackSection = renderPrFeedbackSection(ctx.pendingPrFeedback ?? [])
+
   // Orientation mode kicks in when this is a fresh project AND there's no
   // concrete task to act on. The first session on a project that already
   // has tasks is just a normal session — the FIRST SESSION preamble used to
@@ -100,9 +123,21 @@ export function buildSessionPrompt(ctx: SessionPromptContext): string {
     task: ctx.task.trim(),
     gatesSection,
     projectNeverList,
+    prFeedbackSection,
     preamble,
     promptVersion: PROMPT_VERSION,
   })
+}
+
+function renderPrFeedbackSection(entries: ReadonlyArray<PendingPrFeedbackEntry>): string {
+  if (entries.length === 0) return ''
+  const items = entries
+    .map((e) => {
+      const trimmed = e.body.trim()
+      return `### PR #${e.prNumber} (branch \`${e.branchName}\`) — ${e.author}, ${e.postedAt}\n\n${trimmed}`
+    })
+    .join('\n\n')
+  return `\n== FEEDBACK ON RECENT PRs ==\n\nThe developer (or reviewers) left these comments on Maestro PRs that\nhaven't been addressed yet. If any are relevant to your current task,\naddress them in this session. If a comment reveals a recurring problem\nwith how previous sessions worked, update context.md so future sessions\ndon't repeat it. When you address a comment, mention the PR number in\nyour journal entry — e.g. "addressed PR #42 feedback" — so Maestro can\nmark it as processed.\n\n${items}\n`
 }
 
 /**
@@ -148,6 +183,8 @@ interface SessionTemplateInputs {
   task: string
   gatesSection: string
   projectNeverList: string
+  /** Empty string when there is no pending feedback. */
+  prFeedbackSection: string
   preamble: string
   promptVersion: string
 }
@@ -173,7 +210,7 @@ ${i.state || '_(state.md is empty — note this in your journal entry.)_'}
 == RECENT JOURNAL (last 3 sessions) ==
 
 ${i.journalSection}
-
+${i.prFeedbackSection}
 == YOUR TASK ==
 
 ${i.task || '_(No concrete task supplied. If state.md does not name one, do nothing and explain in the journal.)_'}

@@ -42,6 +42,7 @@ import type { JobQueue } from './job-queue.js'
 import type { Scheduler } from './scheduler.js'
 import {
   CostRepository,
+  PrFeedbackRepository,
   ProjectRepository,
   QualityGateRepository,
   ScheduledRunsRepository,
@@ -77,6 +78,7 @@ export function buildServer(deps: ServerDeps): Hono {
   const gates = new QualityGateRepository(deps.db)
   const costs = new CostRepository(deps.db)
   const scheduledRuns = new ScheduledRunsRepository(deps.db)
+  const feedback = new PrFeedbackRepository(deps.db)
 
   app.use('*', honoLogger((msg) => logger.debug(msg)))
   app.use('/api/*', cors({ origin: '*' }))
@@ -118,6 +120,17 @@ export function buildServer(deps: ServerDeps): Hono {
       return c.json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Unknown project' } }, 404)
     }
     return c.json({ project })
+  })
+
+  app.get('/api/projects/:slug/feedback', (c) => {
+    const project = projects.findBySlug(c.req.param('slug'))
+    if (!project) {
+      return c.json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Unknown project' } }, 404)
+    }
+    return c.json({
+      pending: feedback.pendingForProject(project.id),
+      pendingCount: feedback.pendingCount(project.id),
+    })
   })
 
   app.get('/api/sessions', (c) => {
