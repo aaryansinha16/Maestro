@@ -14,6 +14,8 @@ const NAV: NavItem[] = [
   { to: '/', label: 'Overview', exact: true },
   { to: '/sessions', label: 'Sessions' },
   { to: '/prs', label: 'Pull Requests' },
+  { to: '/schedule', label: 'Schedule' },
+  { to: '/queue', label: 'Queue' },
   { to: '/costs', label: 'Costs' },
   { to: '/settings', label: 'Settings' },
 ]

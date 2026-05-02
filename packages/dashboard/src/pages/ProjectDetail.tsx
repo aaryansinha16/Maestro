@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import type {
   GetProjectResponse,
+  ListScheduleResponse,
   ListSessionsResponse,
+  ListSkipsResponse,
   CostAggregationsResponse,
 } from '@maestro/api'
 import { useApi } from '../hooks/useApi'
@@ -131,6 +133,8 @@ export function ProjectDetail() {
         )}
       </div>
 
+      <SchedulingPanel slug={p.slug} />
+
       <div className="panel">
         <header className="panel-header">
           <h3 className="font-medium text-white">Configuration</h3>
@@ -201,5 +205,94 @@ function ErrorCard({ message }: { message: string }) {
         {message}
       </div>
     </section>
+  )
+}
+
+function SchedulingPanel({ slug }: { slug: string }) {
+  const api = useApi()
+  const [schedule, setSchedule] = useState<ListScheduleResponse | null>(null)
+  const [skips, setSkips] = useState<ListSkipsResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([
+      api.get<ListScheduleResponse>('/api/schedule'),
+      api.get<ListSkipsResponse>(`/api/projects/${encodeURIComponent(slug)}/skips?limit=10`),
+    ])
+      .then(([s, sk]) => {
+        if (cancelled) return
+        setSchedule(s)
+        setSkips(sk)
+      })
+      .catch(() => {
+        /* ignore — section is informational */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [api, slug])
+  const entry = schedule?.entries.find((e) => e.slug === slug)
+
+  const resume = async () => {
+    await api.post(`/api/projects/${encodeURIComponent(slug)}/resume`)
+    const next = await api.get<ListScheduleResponse>('/api/schedule')
+    setSchedule(next)
+  }
+
+  return (
+    <div className="panel">
+      <header className="panel-header">
+        <h3 className="font-medium text-white">Scheduling</h3>
+        {entry?.autoPausedAt ? (
+          <button
+            onClick={() => void resume()}
+            className="text-xs text-amber-400 hover:underline"
+          >
+            resume now
+          </button>
+        ) : null}
+      </header>
+      <div className="grid grid-cols-1 gap-3 px-5 py-4 text-sm md:grid-cols-3">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-navy-400">Enabled</div>
+          <div className="text-navy-100">{entry?.scheduledEnabled ? 'yes' : 'no'}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-navy-400">Schedule</div>
+          <div className="font-mono text-navy-100">{entry?.schedule ?? '—'}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-navy-400">Next run</div>
+          <div className="text-navy-100">
+            {entry?.scheduledEnabled
+              ? entry?.nextRunAt
+                ? new Date(entry.nextRunAt).toLocaleString()
+                : '—'
+              : '—'}
+          </div>
+        </div>
+        {entry?.autoPausedAt ? (
+          <div className="md:col-span-3">
+            <div className="text-xs uppercase tracking-wide text-amber-500">Auto-paused</div>
+            <div className="text-amber-300">{entry.autoPauseReason ?? '(no reason)'}</div>
+          </div>
+        ) : null}
+      </div>
+      <header className="panel-header">
+        <h4 className="text-xs uppercase tracking-wide text-navy-400">Recent skips</h4>
+      </header>
+      <div className="px-5 py-3 text-xs text-navy-300">
+        {!skips || skips.skips.length === 0
+          ? '(none yet)'
+          : skips.skips.map((s) => (
+              <div key={s.id} className="flex justify-between border-b border-navy-700/50 py-1">
+                <span>
+                  <span className="font-mono">{s.action}</span>
+                  {s.skipReason ? <span className="ml-2">{s.skipReason}</span> : null}
+                </span>
+                <span className="text-navy-400">{new Date(s.firedAt).toLocaleString()}</span>
+              </div>
+            ))}
+      </div>
+    </div>
   )
 }
