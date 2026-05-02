@@ -371,4 +371,28 @@ Order:
 
 ---
 
+## ADR-023: PR feedback loop fetches GitHub comments into the next session
+
+**Date**: 2026-05-02
+**Decision**: Phase 4 / Sub 1 turns reviewer comments on Maestro-opened PRs into structured prompt input. Before each session, the worker calls `syncPendingFeedback`, which lists the project's open PRs whose branch matches the configured prefix, fetches comments via Octokit, filters via an allowlist (default `[config.developerGithubUsername]`), and persists new ones to the `pr_feedback` table. The session prompt grows a `== FEEDBACK ON RECENT PRs ==` section (PROMPT_VERSION 1.2.0) when any rows are pending. After the session, the worker reads the agent's new journal entry and marks rows processed for any PR the agent acknowledged ("addressed PR #42 feedback").
+
+**Reasoning**: The developer just onboarded their first real project. Without this loop, every PR critique requires manually editing `state.md` — exactly the friction the PR-only workflow was supposed to remove. The journal-based heuristic is intentionally simple: false negatives just mean the same comment surfaces in the next session, which is acceptable. Far harsher to mark a comment processed when the agent didn't actually address it (false positive) than to surface the same one twice.
+
+**Subscription cost impact**:
+- **+0 Claude calls per session.** The fetch is HTTP-only and uses the existing `GITHUB_TOKEN`.
+- **+~250–500 prompt tokens per pending comment.** When a session runs with 3 pending comments, the prompt grows by ~1.5k tokens — well within budget for the Pro/Max subscription.
+- The 5-minute per-PR cooldown stops a tight loop of failed sessions from hammering the GitHub rate limit.
+
+**Alternatives considered**:
+- (a) Webhook-driven ingest. Lower latency than polling, but requires the conductor to expose a public endpoint with signed-payload validation — a Phase 5 deployment problem, not a Phase 4 feature problem.
+- (b) Auto-rewrite `state.md` from comments instead of adding a prompt section. The agent would lose the original wording and provenance of the comment; folding into the prompt preserves both.
+
+**Implications**:
+- `PROMPT_VERSION` bumped to `1.2.0`. Sessions are grouped by version on the dashboard so we can A/B observe whether feedback-equipped sessions land merge-able PRs more often.
+- `pendingPrFeedback` is opt-in at the prompt level — empty by default, only the worker passes a populated array. Tests, dry runs, and the orientation flow all see the unchanged template.
+- Bot accounts (`vercel[bot]`, `github-actions[bot]`, etc.) are excluded by a hard-coded deny list plus a `*[bot]` suffix rule, regardless of allowlist contents. The agent never reacts to CI noise.
+- Adding new commenters (e.g. a future co-developer) means adding their login to the allowlist, currently configured by env var (`MAESTRO_FEEDBACK_ALLOWLIST` deferred to Sub 4 once the API has auth).
+
+---
+
 *Add new decisions above this line. Keep them numbered sequentially.*

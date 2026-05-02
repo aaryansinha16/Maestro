@@ -19,7 +19,7 @@
 // the env (DEFAULT: just "claude").
 
 import { existsSync } from 'node:fs'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -45,10 +45,17 @@ import {
   ProjectLockManager,
 } from './locks.js'
 import {
+  PrFeedbackRepository,
   ProjectRepository,
   QualityGateRepository,
   SessionRepository,
 } from './repositories.js'
+import {
+  defaultAllowlistFor,
+  markFeedbackProcessedFromJournal,
+  syncPendingFeedback,
+  type PrFeedbackAllowlist,
+} from './pr-feedback.js'
 import {
   listRecentJournal,
   readMaestroDir,
@@ -92,6 +99,12 @@ export interface RunSessionInput {
    * Skip the live `claude --version` check. Used by tests.
    */
   skipClaudeProbe?: boolean
+  /**
+   * Phase 4 / Sub 1: override the PR-feedback author allowlist. Defaults to
+   * `[config.developerGithubUsername]`. Tests inject a custom allowlist; the
+   * production default is the developer's GitHub login.
+   */
+  prFeedbackAllowlist?: PrFeedbackAllowlist
 }
 
 export interface RunSessionOutput extends SessionResult {
@@ -175,6 +188,30 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
   const maestro = await readMaestroDir(workingRoot)
   const recentJournal = await listRecentJournal(workingRoot, 3)
 
+  // Phase 4 / Sub 1: fetch any pending reviewer comments on the project's
+  // open Maestro PRs. Best-effort — failures are logged and the prompt
+  // simply omits the section. Skipped on dry runs so `--dry-run` doesn't
+  // talk to GitHub.
+  const feedbackRepo = new PrFeedbackRepository(input.db)
+  if (!input.dryRun) {
+    const githubClient =
+      input.githubClient ??
+      (config.githubToken
+        ? createGitHubClient({ token: config.githubToken })
+        : null)
+    if (githubClient) {
+      await syncPendingFeedback({
+        project,
+        githubClient,
+        feedback: feedbackRepo,
+        allowlist:
+          input.prFeedbackAllowlist ??
+          defaultAllowlistFor(config.developerGithubUsername),
+      })
+    }
+  }
+  const pendingFeedback = feedbackRepo.pendingForProject(project.id)
+
   // Step 4: build prompt ------------------------------------------------------------
   const task = deriveTaskFromState(maestro.state.raw)
   const neverTouch = parseNeverTouchSection(maestro.context)
@@ -190,6 +227,13 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
     qualityGates: project.autonomyConfig.qualityGates,
     isFirstSession: recentJournal.length === 0,
     projectSpecificNeverTouch: neverTouch,
+    pendingPrFeedback: pendingFeedback.map((f) => ({
+      prNumber: f.prNumber,
+      branchName: f.prBranch,
+      author: f.commentAuthor,
+      body: f.commentBody,
+      postedAt: f.postedAt,
+    })),
   }
   const orientationMode = isOrientationModeFromContext(promptCtx)
   const prompt = buildSessionPrompt(promptCtx)
@@ -264,6 +308,16 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
       ...extra,
     })
     void updated
+    // Phase 4 / Sub 1: if the agent's journal claims it addressed any PR
+    // feedback, mark those rows processed. Best-effort; failure here must
+    // not block the session result.
+    void markFeedbackFromNewJournal({
+      workingRoot,
+      newJournalFile: touchedMaestro.newJournalFile,
+      projectId: project.id,
+      sessionId: input.sessionId,
+      feedback: feedbackRepo,
+    })
     return {
       sessionId: input.sessionId,
       status,
@@ -636,6 +690,39 @@ function parseNeverTouchSection(contextMd: string): string[] {
       return m?.[1] ?? null
     })
     .filter((s): s is string => s !== null && s.length > 0 && !/^_.*_$/.test(s))
+}
+
+// ─── PR feedback marking ─────────────────────────────────────────────
+
+interface MarkFeedbackFromJournalInput {
+  workingRoot: string
+  newJournalFile: string | null
+  projectId: string
+  sessionId: string
+  feedback: PrFeedbackRepository
+}
+
+async function markFeedbackFromNewJournal(input: MarkFeedbackFromJournalInput): Promise<void> {
+  if (!input.newJournalFile) return
+  try {
+    const path = join(input.workingRoot, '.maestro', 'journal', input.newJournalFile)
+    if (!existsSync(path)) return
+    const body = await readFile(path, 'utf-8')
+    const updated = markFeedbackProcessedFromJournal({
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      journalBody: body,
+      feedback: input.feedback,
+    })
+    if (updated > 0) {
+      logger.info(
+        { sessionId: input.sessionId, updated },
+        'pr-feedback: marked rows processed from journal',
+      )
+    }
+  } catch (err) {
+    logger.warn({ err }, 'pr-feedback: failed to mark journal-addressed feedback')
+  }
 }
 
 // ─── Working-dir maintenance API ─────────────────────────────────────

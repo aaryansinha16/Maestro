@@ -208,4 +208,4 @@ After your work, state.md should reflect:
 
 Start by acknowledging your task. Then proceed.
 
-[prompt-version: 1.1.0]
+[prompt-version: 1.2.0]

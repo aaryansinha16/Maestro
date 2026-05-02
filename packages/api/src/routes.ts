@@ -183,6 +183,8 @@ export const ROUTES = {
   getQueue: { method: 'GET', path: '/api/queue' },
   listSkips: { method: 'GET', path: '/api/projects/:slug/skips' },
   triggerProject: { method: 'POST', path: '/api/projects/:slug/trigger' },
+  // Phase 4 / Sub 1.
+  getProjectFeedback: { method: 'GET', path: '/api/projects/:slug/feedback' },
 } as const
 
 export type RouteKey = keyof typeof ROUTES

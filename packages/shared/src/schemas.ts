@@ -214,6 +214,22 @@ export const BriefingSchema = z.object({
   tgMessageId: z.string().nullable(),
 })
 
+// ─── Phase 4: PR feedback loop ───────────────────────────────────────
+
+export const PrFeedbackSchema = z.object({
+  id: z.number().int().positive(),
+  projectId: z.string().min(1),
+  prNumber: z.number().int().positive(),
+  prBranch: z.string().min(1),
+  commentId: z.number().int().positive(),
+  commentBody: z.string().min(1),
+  commentAuthor: z.string().min(1),
+  postedAt: z.string().datetime(),
+  fetchedAt: z.string().datetime(),
+  processedAt: z.string().datetime().nullable(),
+  appliedInSessionId: z.string().min(1).nullable(),
+})
+
 // ─── autonomy.json on disk ───────────────────────────────────────────
 
 // The shape stored at .maestro/autonomy.json in each managed project. Same
