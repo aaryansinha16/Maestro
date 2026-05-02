@@ -7,6 +7,8 @@ import { SessionDetail } from './pages/SessionDetail'
 import { PRs } from './pages/PRs'
 import { Settings } from './pages/Settings'
 import { Costs } from './pages/Costs'
+import { Schedule } from './pages/Schedule'
+import { Queue } from './pages/Queue'
 
 export function App() {
   return (
@@ -17,6 +19,8 @@ export function App() {
         <Route path="sessions" element={<Sessions />} />
         <Route path="sessions/:id" element={<SessionDetail />} />
         <Route path="prs" element={<PRs />} />
+        <Route path="schedule" element={<Schedule />} />
+        <Route path="queue" element={<Queue />} />
         <Route path="costs" element={<Costs />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
