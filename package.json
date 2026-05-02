@@ -27,8 +27,13 @@
   },
   "dependencies": {
     "@maestro/api": "workspace:*",
+    "@maestro/conductor": "workspace:*",
     "@maestro/shared": "workspace:*",
-    "cac": "^6.7.14"
+    "cac": "^6.7.14",
+    "dotenv": "^16.4.7",
+    "kleur": "^4.1.5",
+    "prompts": "^2.4.2",
+    "simple-git": "^3.27.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -39,6 +44,7 @@
   "devDependencies": {
     "@eslint/js": "^9.18.0",
     "@types/node": "^22.10.5",
+    "@types/prompts": "^2.4.9",
     "@typescript-eslint/eslint-plugin": "^8.20.0",
     "@typescript-eslint/parser": "^8.20.0",
     "concurrently": "^9.1.2",

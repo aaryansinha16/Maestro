@@ -1,47 +1,122 @@
 #!/usr/bin/env tsx
-// `maestro` CLI. Lightweight wrapper around the conductor API for tasks the
-// developer runs from the terminal.
+// `maestro` CLI entry point.
 //
-// Phase 0: `list` and `status` hit the API. `add` and `run` are stubbed to
-// "not implemented" — the actual project registration and session triggering
-// arrive in Phases 1 and 2 respectively.
+// `init`, `add`, `run`, and `inspect` operate against the local SQLite
+// database (via the conductor's library API) so they work even when the
+// HTTP server isn't running.
+// `list` and `status` hit the running conductor over HTTP.
 
 import { cac } from 'cac'
 import type { HealthResponse, ListProjectsResponse } from '@maestro/api'
+import {
+  PROJECT_AUTONOMY_LEVELS,
+  QUALITY_GATE_NAMES,
+  type ProjectAutonomyConfig,
+} from '@maestro/shared'
+import { runInit } from './cli/init.js'
+import { runAdd } from './cli/add.js'
+import { runRun, runInspect } from './cli/run.js'
+import { failWith, loadEnvFromRepoRoot } from './cli/util.js'
+
+loadEnvFromRepoRoot()
 
 const PACKAGE_VERSION = '0.0.0'
-const DEFAULT_API_BASE = process.env.MAESTRO_API_BASE ?? 'http://localhost:3000'
+const DEFAULT_API_BASE = process.env['MAESTRO_API_BASE'] ?? 'http://localhost:3000'
 
 const cli = cac('maestro')
 
 cli
-  .command('add <repo-url>', 'Register a GitHub repository with Maestro')
-  .option('--autonomy <level>', 'Autonomy level (full|pr-only|draft-only|paused)', {
-    default: 'pr-only',
+  .command('init <project-path>', 'Interactive .maestro/ scaffolding for a project')
+  .option('--force', 'Skip the dirty-git-tree check')
+  .option('--non-interactive', 'Use defaults / flags instead of prompts (CI-friendly)')
+  .option('--focus <text>', 'Required with --non-interactive: 1–3 sentences for state.md')
+  .option('--task <text>', 'Repeatable: an entry under "Next Concrete Tasks"')
+  .option(
+    '--level <level>',
+    `Autonomy level (${PROJECT_AUTONOMY_LEVELS.join('|')})`,
+    { default: 'pr-only' },
+  )
+  .option('--schedule <cron>', 'Cron schedule string', { default: '0 */6 * * *' })
+  .option('--time-budget-minutes <n>', 'Session time budget in minutes', { default: 45 })
+  .option(
+    '--gates <list>',
+    `Comma-separated quality gates (${QUALITY_GATE_NAMES.join('|')})`,
+    { default: 'test,lint,typecheck' },
+  )
+  .option('--branch-prefix <prefix>', 'Branch prefix for Maestro PRs', {
+    default: 'maestro/',
   })
-  .option('--schedule <cron>', 'Cron schedule', { default: '0 */6 * * *' })
-  .action((_repoUrl: string, _opts: unknown) => {
-    notImplemented(
-      'maestro add',
-      'Project registration arrives in Phase 1. See PRODUCT_VISION.md.',
-    )
+  .action(
+    async (
+      path: string,
+      opts: {
+        force?: boolean
+        nonInteractive?: boolean
+        focus?: string
+        task?: string | string[]
+        level?: string
+        schedule?: string
+        timeBudgetMinutes?: number | string
+        gates?: string
+        branchPrefix?: string
+      },
+    ) => {
+      const tasks = Array.isArray(opts.task) ? opts.task : opts.task ? [opts.task] : []
+      const level = opts.level as ProjectAutonomyConfig['level']
+      if (!PROJECT_AUTONOMY_LEVELS.includes(level)) {
+        failWith(`Invalid --level: ${opts.level}`)
+      }
+      const gates = (opts.gates ?? '')
+        .split(',')
+        .map((g) => g.trim())
+        .filter(Boolean) as ProjectAutonomyConfig['qualityGates']
+      for (const g of gates) {
+        if (!QUALITY_GATE_NAMES.includes(g)) {
+          failWith(`Invalid --gates entry: ${g}`)
+        }
+      }
+      const minutes = Number(opts.timeBudgetMinutes ?? 45)
+      if (!Number.isFinite(minutes) || minutes < 5 || minutes > 180) {
+        failWith('--time-budget-minutes must be between 5 and 180')
+      }
+      await runInit(path, {
+        force: opts.force ?? false,
+        nonInteractive: opts.nonInteractive ?? false,
+        focus: opts.focus,
+        tasks,
+        level,
+        schedule: opts.schedule,
+        timeBudgetMinutes: minutes,
+        qualityGates: gates,
+        branchPrefix: opts.branchPrefix,
+      })
+    },
+  )
+
+cli
+  .command('add <repo-url>', 'Register a GitHub repository with Maestro')
+  .option('--from-path <path>', 'Use a local checkout instead of cloning the repo')
+  .action(async (repoUrl: string, opts: { fromPath?: string }) => {
+    await runAdd(repoUrl, { fromPath: opts.fromPath })
   })
 
 cli
-  .command('run <project>', 'Manually trigger a session for a project')
-  .option('--dry-run', 'Build the prompt and log it without spawning Claude')
-  .action((_project: string, _opts: { dryRun?: boolean }) => {
-    notImplemented(
-      'maestro run',
-      'Manual session execution arrives in Phase 1. See PRODUCT_VISION.md.',
-    )
+  .command('run <slug>', 'Manually trigger a session for a project')
+  .option('--dry-run', 'Build the prompt and log it without spawning Claude Code')
+  .option('--claude-bin <path>', 'Override the claude binary (test-only)')
+  .action(async (slug: string, opts: { dryRun?: boolean; claudeBin?: string }) => {
+    await runRun(slug, { dryRun: opts.dryRun ?? false, claudeBin: opts.claudeBin })
+  })
+
+cli
+  .command('inspect <session-id>', 'Show details and log tail for a session')
+  .action(async (sessionId: string) => {
+    await runInspect(sessionId)
   })
 
 cli
   .command('list', 'List projects under Maestro management')
-  .option('--api <url>', 'Override the conductor API base URL', {
-    default: DEFAULT_API_BASE,
-  })
+  .option('--api <url>', 'Override the conductor API base URL', { default: DEFAULT_API_BASE })
   .action(async (opts: { api: string }) => {
     const data = await fetchJson<ListProjectsResponse>(opts.api, '/api/projects')
     if (data.projects.length === 0) {
@@ -55,9 +130,7 @@ cli
 
 cli
   .command('status', 'Conductor health check')
-  .option('--api <url>', 'Override the conductor API base URL', {
-    default: DEFAULT_API_BASE,
-  })
+  .option('--api <url>', 'Override the conductor API base URL', { default: DEFAULT_API_BASE })
   .action(async (opts: { api: string }) => {
     const health = await fetchJson<HealthResponse>(opts.api, '/api/health')
     console.log(`status     ${health.status}`)
@@ -73,14 +146,7 @@ try {
   cli.parse(process.argv, { run: false })
   await cli.runMatchedCommand()
 } catch (err) {
-  console.error(err instanceof Error ? err.message : err)
-  process.exit(1)
-}
-
-function notImplemented(name: string, why: string): never {
-  console.error(`${name}: not implemented`)
-  console.error(why)
-  process.exit(2)
+  failWith(err instanceof Error ? err.message : String(err), err)
 }
 
 async function fetchJson<T>(base: string, path: string): Promise<T> {

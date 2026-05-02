@@ -12,6 +12,7 @@ import {
   ProjectSchema,
   SessionSchema,
   PullRequestSchema,
+  QualityGateRunSchema,
 } from '@maestro/shared'
 
 // ─── Common ──────────────────────────────────────────────────────────
@@ -58,6 +59,22 @@ export const ListSessionsResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 })
 
+export const GetSessionParamsSchema = z.object({
+  id: z.string().min(1),
+})
+
+export const GetSessionResponseSchema = z.object({
+  session: SessionSchema,
+  qualityGates: z.array(QualityGateRunSchema),
+})
+
+export const SessionLogResponseSchema = z.object({
+  available: z.boolean(),
+  truncated: z.boolean(),
+  tail: z.string(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+})
+
 // ─── /api/prs ────────────────────────────────────────────────────────
 
 export const ListPullRequestsQuerySchema = z.object({
@@ -79,6 +96,8 @@ export const ROUTES = {
   listProjects: { method: 'GET', path: '/api/projects' },
   getProject: { method: 'GET', path: '/api/projects/:slug' },
   listSessions: { method: 'GET', path: '/api/sessions' },
+  getSession: { method: 'GET', path: '/api/sessions/:id' },
+  getSessionLog: { method: 'GET', path: '/api/sessions/:id/log' },
   listPullRequests: { method: 'GET', path: '/api/prs' },
 } as const
 

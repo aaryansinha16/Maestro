@@ -3,6 +3,7 @@ import { Layout } from './components/Layout'
 import { Overview } from './pages/Overview'
 import { ProjectDetail } from './pages/ProjectDetail'
 import { Sessions } from './pages/Sessions'
+import { SessionDetail } from './pages/SessionDetail'
 import { PRs } from './pages/PRs'
 import { Settings } from './pages/Settings'
 
@@ -13,6 +14,7 @@ export function App() {
         <Route index element={<Overview />} />
         <Route path="projects/:slug" element={<ProjectDetail />} />
         <Route path="sessions" element={<Sessions />} />
+        <Route path="sessions/:id" element={<SessionDetail />} />
         <Route path="prs" element={<PRs />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />

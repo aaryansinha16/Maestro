@@ -4,13 +4,24 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/lib.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    },
+    "./bootstrap": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -b && pnpm run copy-assets",
     "copy-assets": "node ./scripts/copy-migrations.mjs",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -18,16 +29,22 @@
     "@hono/zod-validator": "^0.4.2",
     "@maestro/api": "workspace:*",
     "@maestro/shared": "workspace:*",
+    "@octokit/rest": "^21.1.0",
     "better-sqlite3": "^12.9.0",
     "dotenv": "^16.4.7",
+    "execa": "^9.5.2",
     "hono": "^4.6.14",
+    "p-retry": "^6.2.1",
     "pino": "^9.5.0",
     "pino-pretty": "^13.0.0",
+    "proper-lockfile": "^4.1.2",
+    "simple-git": "^3.27.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.5",
+    "@types/proper-lockfile": "^4.1.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"

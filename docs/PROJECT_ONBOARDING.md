@@ -4,100 +4,146 @@ How to bring a project under Maestro management. The onboarding flow is
 deliberately friction-heavy — better to spend an hour setting a project up
 well than to have weeks of bad agent commits (per `PROJECT_CONFIG.md`).
 
-> Phase 0 status: this document describes the intended end-state. The CLI
-> commands referenced here (`maestro init`, `maestro add`, `maestro run`) are
-> stubs in Phase 0 and become real in Phases 1-2.
+The CLI commands referenced here (`maestro init`, `maestro add`, `maestro run`)
+are real as of Phase 1. Phase 2 will add scheduling on top.
 
-## 1. Create the `.maestro/` directory
+## Pre-flight
 
-In the project's working tree:
+You need:
 
-```text
-.maestro/
-├── state.md
-├── context.md
-├── decisions.md
-├── autonomy.json
-└── journal/
-```
+- `claude` CLI on PATH, OAuth'd via `claude /login` (ADR-001).
+- `GITHUB_TOKEN` in the conductor's environment with write access to the
+  repos you'll manage. Fine-grained PATs are preferred.
+- `DEVELOPER_NAME`, `DEVELOPER_EMAIL`, `DEVELOPER_GITHUB_USERNAME` set so
+  the agent's commits use your identity.
 
-The full contract for these files is in `CLAUDE.md` (root of this repo)
-under "The .maestro/ Directory Contract".
+## 1. Initialise `.maestro/` interactively
 
-## 2. Write `context.md` (long-lived)
-
-Architecture overview, conventions, key files, gotchas. The agent reads this
-every session. Keep it ~200-500 lines. Include:
-
-- Tech stack and main entry points
-- Code style and naming conventions
-- Commit message format
-- Test commands and patterns
-- Project-specific NEVER-touch list
-- Any external systems the project integrates with
-
-## 3. Write `state.md` (immediate work)
-
-Current focus, 3-5 concrete next tasks, blockers. The agent picks one task
-per session from "Next Concrete Tasks". See `CLAUDE.md` for the section
-template.
-
-## 4. Configure `autonomy.json`
-
-```json
-{
-  "level": "pr-only",
-  "schedule": "0 */6 * * *",
-  "timeBudget": 2700,
-  "qualityGates": ["test", "lint", "typecheck"],
-  "branches": { "base": "main", "prefix": "maestro/" },
-  "github": { "prLabels": ["maestro"], "draftByDefault": false },
-  "skipDays": [],
-  "maxSessionsPerDay": 6
-}
-```
-
-`timeBudget` is in seconds. Default 2700 (45 minutes). See
-`PROJECT_CONFIG.md` for the developer's per-project decisions.
-
-## 5. Commit `.maestro/` to the project repo
-
-The directory travels with the code (ADR-004). Both your active sessions and
-Maestro's autonomous sessions read the same files.
-
-## 6. Register with Maestro
+In your project's clean working tree:
 
 ```bash
-maestro add <repo-url>
+maestro init /path/to/your/project
 ```
 
-## 7. Dry-run the first session
+The CLI:
+
+- Verifies the path is a git repo with a clean working tree.
+- Scrapes a starter `context.md` from `package.json`/`pyproject.toml`/`Cargo.toml`,
+  README excerpt, and top-level layout.
+- Asks for your current focus (1–3 sentences) and the initial 3–5 concrete tasks.
+- Asks for autonomy level, cron schedule, time budget (minutes), and quality gates.
+- Writes `.maestro/{state,context,decisions,autonomy}.{md,json}` plus an empty
+  `journal/.gitkeep`.
+- Validates everything it just wrote with the Zod schemas in `@maestro/shared`.
+
+The autonomy levels are described in `CLAUDE.md`:
+
+- `pr-only` — agent opens regular PRs, you merge. Default for most projects.
+- `draft-only` — agent opens draft PRs that explicitly need review.
+- `full` — agent commits directly to main. Reserved for low-risk projects.
+- `paused` — Maestro doesn't touch this project until unpaused.
+
+## 2. Edit `context.md` to taste
+
+The scrape is just a starting point. Open `.maestro/context.md` and add:
+
+- Architecture overview, key files, conventions
+- Commit message format (the agent follows yours, not Maestro's)
+- Project-specific NEVER list (financial code paths, auth, etc.)
+- Anything that would surprise a fresh agent
+
+Keep it ~200–500 lines. The agent reads this every session.
+
+## 3. Commit `.maestro/` to your project repo
 
 ```bash
-maestro run <project> --dry-run
+cd /path/to/your/project
+git add .maestro
+git commit -m "chore: maestro init"
+git push
 ```
 
-This prints the constructed prompt without spawning Claude. Read it. If
-anything looks off, the fix is almost always in `state.md` or `context.md`,
-not in the agent.
+The directory travels with the code (ADR-004). Both your active editor
+sessions and Maestro's autonomous sessions read the same files.
 
-## 8. Real first session
+## 4. Register the project with Maestro
 
 ```bash
-maestro run <project>
+maestro add https://github.com/<owner>/<repo>
 ```
 
-For a brand-new project the first session is intentionally orientation-only
-(see the FIRST SESSION preamble in `packages/shared/src/prompt-templates.ts`).
-The next session will start real work.
+This clones the repo to a temp directory, validates `.maestro/`, and inserts
+a `projects` row. The slug is derived from `<owner>-<repo>` lower-cased.
 
-## 9. Review the resulting PR carefully
+## 5. Dry-run the first session
+
+```bash
+maestro run <slug> --dry-run
+```
+
+This prints the exact prompt the agent will receive — without spawning Claude.
+Read it. If anything looks off, the fix is almost always in `state.md` or
+`context.md`, not in the agent.
+
+## 6. The real first session
+
+```bash
+maestro run <slug>
+```
+
+The conductor:
+
+1. Acquires the per-project lock.
+2. Refreshes its working clone under `MAESTRO_DATA_DIR/work/<slug>`.
+3. Builds the prompt from `state.md`, `context.md`, and recent journal.
+4. Spawns `claude -p` with a sandboxed working dir and the configured budget.
+5. At budget − 5 min sends SIGTERM (graceful wrap-up); at budget sends SIGTERM;
+   at budget + 30s SIGKILL.
+6. Verifies the agent committed work on a feature branch and updated
+   `state.md` + journal.
+7. Runs your quality gates (`pnpm test`, `pnpm lint`, `pnpm typecheck`, etc).
+8. If a gate fails, spawns one fixup turn (15-minute budget) and re-runs gates.
+9. If all gates pass, pushes the branch and opens a PR.
+10. If gates still fail, pushes the branch with a `quality-gates-failed` label
+    but does NOT open a PR.
+
+The whole session is logged to `MAESTRO_DATA_DIR/logs/sessions/<id>.log`.
+
+For a brand-new project the **first** session is intentionally
+orientation-only (see the FIRST SESSION preamble in
+`packages/shared/src/prompt-templates.ts`). The agent reads, explores, and
+expands `context.md` and `state.md` — it does not write code. The next
+session starts real work.
+
+## 7. Inspect what happened
+
+```bash
+maestro inspect <session-id>
+```
+
+Or open the dashboard at `http://localhost:5173` (in dev) and click the
+session.
+
+## 8. Review the PR carefully
 
 The first 2 weeks of any project are for building trust with the system.
 Review every PR. When something is wrong, update `state.md` or `context.md`
 rather than trying to "fix" the agent.
 
-## 10. Enable the schedule
+## 9. Enable the schedule (Phase 2)
 
-Once you've shipped a few good PRs from manual sessions, switch the project
-on. The schedule in `autonomy.json` takes effect on the next scheduler tick.
+Phase 1 is manual-only — you trigger every session yourself. Phase 2 wires
+`autonomy.json`'s `schedule` field to a node-cron daemon. You'll be able to
+turn that on by toggling the project from `paused` once Phase 2 lands.
+
+## Quick reference
+
+```bash
+maestro init <path>                    # scaffold .maestro/ interactively
+maestro add <repo-url>                 # register with the conductor
+maestro list                           # registered projects
+maestro run <slug> --dry-run           # print the prompt only
+maestro run <slug>                     # real session
+maestro inspect <session-id>           # session details + log tail
+maestro status                         # conductor health
+```

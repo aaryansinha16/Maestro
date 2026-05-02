@@ -14,6 +14,11 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/.vite/**',
       '**/coverage/**',
+      // Working clones of managed projects (created by the worker) and any
+      // local sandbox fixtures the developer keeps in the repo for testing.
+      // Their style rules are not Maestro's concern.
+      'data/**',
+      'maestro-test/**',
       '**/*.config.js',
       '**/*.config.cjs',
       '**/*.config.mjs',

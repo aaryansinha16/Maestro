@@ -14,8 +14,10 @@ import type {
   PullRequestSchema,
   CostRecordSchema,
   BriefingSchema,
+  TerminationCauseSchema,
 } from './schemas.js'
 import type { z } from 'zod'
+import type { PROJECT_STACKS } from './constants.js'
 
 // ─── Autonomy ────────────────────────────────────────────────────────
 
@@ -74,3 +76,19 @@ export type CostRecord = z.infer<typeof CostRecordSchema>
 // ─── Briefing ────────────────────────────────────────────────────────
 
 export type Briefing = z.infer<typeof BriefingSchema>
+
+// ─── Termination cause ───────────────────────────────────────────────
+
+export type TerminationCause = z.infer<typeof TerminationCauseSchema>
+
+// ─── Project stacks ──────────────────────────────────────────────────
+
+export type ProjectStack = (typeof PROJECT_STACKS)[number]
+
+export interface QualityGateCommand {
+  /** Argv-style: program plus args. Never a shell string. */
+  command: string
+  args: string[]
+  /** Where to run the command, relative to project root. */
+  cwd?: string
+}

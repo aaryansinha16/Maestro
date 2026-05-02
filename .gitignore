@@ -23,6 +23,8 @@ build/
 # Working directories (per-project clones for autonomous sessions)
 work/
 /data/
+# A scratch sandbox the developer may sit beside the repo for smoke tests.
+/maestro-test/
 
 # Logs
 logs/

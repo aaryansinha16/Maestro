@@ -67,6 +67,15 @@ export const QualityGateRunSchema = z.object({
   durationMs: z.number().int().nonnegative().optional(),
 })
 
+export const TerminationCauseSchema = z.enum([
+  'exit-clean',
+  'graceful',
+  'sigterm-timeout',
+  'sigkill-timeout',
+  'failed',
+  'killed-by-signal',
+])
+
 export const SessionSchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
@@ -75,9 +84,15 @@ export const SessionSchema = z.object({
   endedAt: z.string().datetime().nullable(),
   costCents: z.number().int().nonnegative().nullable(),
   promptVersion: z.string().min(1),
+  modelUsed: z.string().nullable(),
   branchName: z.string().nullable(),
   prNumber: z.number().int().positive().nullable(),
+  prUrl: z.string().url().nullable(),
   journalPath: z.string().nullable(),
+  logPath: z.string().nullable(),
+  terminationCause: TerminationCauseSchema.nullable(),
+  isFixupTurn: z.boolean().default(false),
+  parentSessionId: z.string().min(1).nullable(),
 })
 
 export const SessionResultSchema = z.object({

@@ -1,51 +1,302 @@
-// .maestro/ file I/O. Reads state.md, context.md, journal entries, and parses
-// autonomy.json with Zod. Writes are locked per-project to prevent concurrent
-// session corruption. Phase 1 work (see PRODUCT_VISION.md).
+// .maestro/ file I/O for managed projects. Reads and writes state.md,
+// context.md, autonomy.json, and the journal directory, with Zod validation
+// at every boundary. File locks via proper-lockfile keep two writers out
+// of the directory at once.
 //
-// Stubs here so callers compile against the intended surface area.
+// IMPORTANT: the agent itself is responsible for editing .maestro/ during a
+// session (per PROMPT_DESIGN.md). Maestro reads state for prompt
+// construction and validates that the agent did its part on session exit;
+// it does NOT mutate state.md or write journal entries on the agent's
+// behalf except in `init`.
 
-import type { ProjectAutonomyConfig, ProjectState, JournalEntry } from '@maestro/shared'
-import { MaestroError } from '@maestro/shared'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import lockfile from 'proper-lockfile'
+import {
+  AutonomyFileSchema,
+  JournalEntrySchema,
+  MAESTRO_DIR_NAME,
+  MAESTRO_PATHS,
+  MaestroError,
+  ProjectStateSchema,
+  type JournalEntry,
+  type ProjectAutonomyConfig,
+  type ProjectState,
+} from '@maestro/shared'
 
-export interface StateManagerInput {
-  /** Absolute path to the working checkout of the project. */
-  projectRoot: string
+// ─── Paths ───────────────────────────────────────────────────────────
+
+export interface ProjectPaths {
+  root: string
+  maestroDir: string
+  state: string
+  context: string
+  decisions: string
+  autonomy: string
+  journalDir: string
 }
 
-export async function readState(_input: StateManagerInput): Promise<ProjectState> {
-  throw notImplemented('readState')
+export function projectPaths(projectRoot: string): ProjectPaths {
+  const maestroDir = join(projectRoot, MAESTRO_DIR_NAME)
+  return {
+    root: projectRoot,
+    maestroDir,
+    state: join(maestroDir, MAESTRO_PATHS.state),
+    context: join(maestroDir, MAESTRO_PATHS.context),
+    decisions: join(maestroDir, MAESTRO_PATHS.decisions),
+    autonomy: join(maestroDir, MAESTRO_PATHS.autonomy),
+    journalDir: join(maestroDir, MAESTRO_PATHS.journal),
+  }
 }
 
-export async function writeState(
-  _input: StateManagerInput & { state: ProjectState },
-): Promise<void> {
-  throw notImplemented('writeState')
+// ─── Validators ──────────────────────────────────────────────────────
+
+export interface ValidatedMaestroDir {
+  state: ProjectState
+  context: string
+  autonomy: ProjectAutonomyConfig
 }
 
-export async function readContext(_input: StateManagerInput): Promise<string> {
-  throw notImplemented('readContext')
+/**
+ * Read state.md, context.md, autonomy.json from disk and parse them
+ * through their Zod schemas. Aborts with a structured MaestroError if any
+ * file is missing or malformed — the developer must repair `.maestro/`
+ * before sessions can run.
+ */
+export async function readMaestroDir(projectRoot: string): Promise<ValidatedMaestroDir> {
+  const paths = projectPaths(projectRoot)
+
+  if (!existsSync(paths.maestroDir)) {
+    throw new MaestroError('CONTEXT_FILE_MISSING', {
+      message: `${MAESTRO_DIR_NAME}/ does not exist in ${projectRoot}`,
+      context: { projectRoot },
+    })
+  }
+
+  const [stateBody, contextBody, autonomyBody] = await Promise.all([
+    safeRead(paths.state, 'state.md'),
+    safeRead(paths.context, 'context.md'),
+    safeRead(paths.autonomy, 'autonomy.json'),
+  ])
+
+  const state = ProjectStateSchema.parse({
+    raw: stateBody,
+    path: relPath(paths.root, paths.state),
+  })
+
+  let autonomy: ProjectAutonomyConfig
+  try {
+    autonomy = AutonomyFileSchema.parse(JSON.parse(autonomyBody))
+  } catch (err) {
+    throw new MaestroError('AUTONOMY_CONFIG_INVALID', {
+      message: 'autonomy.json failed validation',
+      cause: err,
+      context: { path: paths.autonomy },
+    })
+  }
+
+  return { state, context: contextBody, autonomy }
 }
 
-export async function readAutonomy(
-  _input: StateManagerInput,
-): Promise<ProjectAutonomyConfig> {
-  throw notImplemented('readAutonomy')
+async function safeRead(path: string, kind: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf-8')
+  } catch (err) {
+    throw new MaestroError('CONTEXT_FILE_MISSING', {
+      message: `Failed to read ${kind} at ${path}`,
+      cause: err,
+      context: { path, kind },
+    })
+  }
+}
+
+function relPath(base: string, target: string): string {
+  if (target.startsWith(base)) return target.slice(base.length).replace(/^\/+/, '')
+  return target
+}
+
+// ─── Journal ─────────────────────────────────────────────────────────
+
+const JOURNAL_FILENAME_RE = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\.md$/
+
+export async function listJournalEntries(projectRoot: string): Promise<JournalEntry[]> {
+  const paths = projectPaths(projectRoot)
+  if (!existsSync(paths.journalDir)) return []
+
+  const filenames = (await readdir(paths.journalDir))
+    .filter((f) => JOURNAL_FILENAME_RE.test(f))
+    .sort() // lexicographic == chronological for ISO-ish names
+
+  const entries: JournalEntry[] = []
+  for (const filename of filenames) {
+    const body = await readFile(join(paths.journalDir, filename), 'utf-8')
+    const timestamp = filenameToIso(filename)
+    entries.push(
+      JournalEntrySchema.parse({
+        filename,
+        sessionId: null,
+        timestamp,
+        body,
+      }),
+    )
+  }
+  return entries
 }
 
 export async function listRecentJournal(
-  _input: StateManagerInput & { limit: number },
+  projectRoot: string,
+  limit: number,
 ): Promise<JournalEntry[]> {
-  throw notImplemented('listRecentJournal')
+  const all = await listJournalEntries(projectRoot)
+  return all.slice(-limit)
 }
 
-export async function appendJournal(
-  _input: StateManagerInput & { entry: JournalEntry },
-): Promise<void> {
-  throw notImplemented('appendJournal')
+function filenameToIso(filename: string): string {
+  // 2026-04-15-08-00.md → 2026-04-15T08:00:00.000Z
+  const match = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})\.md$/.exec(filename)
+  if (!match) {
+    throw new MaestroError('STATE_PARSE_FAILED', {
+      message: `Bad journal filename: ${filename}`,
+      context: { filename },
+    })
+  }
+  const [, y, m, d, hh, mm] = match
+  return `${y}-${m}-${d}T${hh}:${mm}:00.000Z`
 }
 
-function notImplemented(name: string): MaestroError {
-  return new MaestroError('INTERNAL_ERROR', {
-    message: `state-manager.${name} is Phase 1 work. See PRODUCT_VISION.md.`,
+// ─── Init flow ───────────────────────────────────────────────────────
+
+export interface InitMaestroDirInput {
+  projectRoot: string
+  state: string
+  context: string
+  autonomy: ProjectAutonomyConfig
+  /** Optional decisions.md seed. */
+  decisions?: string
+}
+
+/**
+ * Create a fresh `.maestro/` skeleton. Used by `maestro init`. Refuses to
+ * overwrite an existing directory.
+ */
+export async function initMaestroDir(input: InitMaestroDirInput): Promise<void> {
+  const paths = projectPaths(input.projectRoot)
+  if (existsSync(paths.maestroDir)) {
+    throw new MaestroError('STATE_WRITE_FAILED', {
+      message: `${MAESTRO_DIR_NAME}/ already exists in ${input.projectRoot}`,
+      context: { path: paths.maestroDir },
+    })
+  }
+  await mkdir(paths.maestroDir, { recursive: true })
+  await mkdir(paths.journalDir, { recursive: true })
+  await Promise.all([
+    writeFile(paths.state, ensureTrailingNewline(input.state), 'utf-8'),
+    writeFile(paths.context, ensureTrailingNewline(input.context), 'utf-8'),
+    writeFile(
+      paths.decisions,
+      ensureTrailingNewline(input.decisions ?? defaultDecisions()),
+      'utf-8',
+    ),
+    writeFile(paths.autonomy, JSON.stringify(input.autonomy, null, 2) + '\n', 'utf-8'),
+    writeFile(join(paths.journalDir, '.gitkeep'), '', 'utf-8'),
+  ])
+
+  // Validate what we just wrote — same path the worker takes.
+  await readMaestroDir(input.projectRoot)
+}
+
+function defaultDecisions(): string {
+  return [
+    '# Project Decisions',
+    '',
+    'Track significant choices and the reasoning behind them. The agent reads',
+    'this every session and respects past decisions unless state.md',
+    'explicitly overrides one.',
+    '',
+  ].join('\n')
+}
+
+function ensureTrailingNewline(s: string): string {
+  return s.endsWith('\n') ? s : s + '\n'
+}
+
+// ─── Validation of agent output ──────────────────────────────────────
+
+export interface MaestroDirAgentOutputCheck {
+  stateUpdated: boolean
+  journalAppended: boolean
+  newJournalFile: string | null
+}
+
+/**
+ * After a session, verify the agent updated state.md and dropped a new
+ * journal entry. Compares against a snapshot taken at session start.
+ */
+export async function verifyAgentTouchedMaestroDir(
+  projectRoot: string,
+  before: { stateMTimeMs: number; journalFilenames: string[] },
+): Promise<MaestroDirAgentOutputCheck> {
+  const paths = projectPaths(projectRoot)
+  const stateStat = await stat(paths.state)
+  const stateUpdated = stateStat.mtimeMs > before.stateMTimeMs
+  const after = (await readdir(paths.journalDir).catch(() => [])).filter((f) => JOURNAL_FILENAME_RE.test(f))
+  const newFiles = after.filter((f) => !before.journalFilenames.includes(f))
+  return {
+    stateUpdated,
+    journalAppended: newFiles.length > 0,
+    newJournalFile: newFiles[0] ?? null,
+  }
+}
+
+export async function snapshotMaestroDir(projectRoot: string): Promise<{
+  stateMTimeMs: number
+  journalFilenames: string[]
+}> {
+  const paths = projectPaths(projectRoot)
+  const stateStat = await stat(paths.state)
+  const journal = (await readdir(paths.journalDir).catch(() => [])).filter((f) => JOURNAL_FILENAME_RE.test(f))
+  return { stateMTimeMs: stateStat.mtimeMs, journalFilenames: journal }
+}
+
+// ─── Locking ─────────────────────────────────────────────────────────
+
+/**
+ * Run `fn` while holding a filesystem lock on the project's `.maestro/`
+ * directory. Uses proper-lockfile so two processes cannot stomp on the
+ * directory at once.
+ */
+export async function withMaestroDirLock<T>(
+  projectRoot: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const paths = projectPaths(projectRoot)
+  if (!existsSync(paths.maestroDir)) {
+    throw new MaestroError('CONTEXT_FILE_MISSING', {
+      message: `${MAESTRO_DIR_NAME}/ does not exist`,
+      context: { path: paths.maestroDir },
+    })
+  }
+  const release = await lockfile.lock(paths.maestroDir, {
+    retries: { retries: 5, factor: 1.5, minTimeout: 100, maxTimeout: 2000 },
+    stale: 5 * 60 * 1000,
   })
+  try {
+    return await fn()
+  } finally {
+    await release()
+  }
+}
+
+// Walk up from cwd looking for a directory containing `.maestro/`. Used by
+// the CLI when `<project-path>` isn't passed explicitly.
+export async function findProjectRootFromCwd(start = process.cwd()): Promise<string | null> {
+  let dir = start
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, MAESTRO_DIR_NAME))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+  return null
 }
