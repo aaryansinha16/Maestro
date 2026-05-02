@@ -72,9 +72,25 @@ maestro/
 
 ## Status
 
-Phase 0 — foundation only. The conductor boots, the dashboard renders, the
-database initialises, but no real session execution yet. Phase 1 implements
-single-project session execution end-to-end.
+Phase 2 — scheduling and parallelism. Single-project session execution is
+verified end-to-end (Phase 1). Phase 1.5 added orientation mode, the context
+scaffolder, doctor / reset / gc, cost tracking, and the dashboard's
+ProjectDetail / Costs / PRs pages. Phase 2 layered cron-driven scheduling
+on top: the scheduler enqueues sessions on each project's cron tick, the
+job queue runs them up to `MAESTRO_MAX_PARALLEL` (default 2) concurrently,
+six skip rules suppress dumb decisions, and a 5-strike auto-pause stops
+scheduling on a project that's failing repeatedly.
+
+**Scheduling is opt-in per project.** New projects start with
+`scheduledEnabled: false`. The developer enables explicitly via
+`maestro schedule enable <slug>` once manual sessions prove the project is
+healthy. See [`docs/SCHEDULING.md`](./docs/SCHEDULING.md).
+
+### Phase 2 env vars
+
+- `MAESTRO_MAX_PARALLEL` — global concurrency limit (default 2)
+- `MAESTRO_TZ` — cron timezone (default `UTC`)
+- `MAESTRO_DEVELOPER_ACTIVITY_WINDOW_HOURS` — Rule A window (default 4)
 
 ## License
 

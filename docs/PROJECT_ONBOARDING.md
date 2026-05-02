@@ -132,9 +132,32 @@ rather than trying to "fix" the agent.
 
 ## 9. Enable the schedule (Phase 2)
 
-Phase 1 is manual-only — you trigger every session yourself. Phase 2 wires
-`autonomy.json`'s `schedule` field to a node-cron daemon. You'll be able to
-turn that on by toggling the project from `paused` once Phase 2 lands.
+## 9. Enable the schedule (Phase 2)
+
+Phase 2 ships scheduling as an opt-in feature. Every project starts with
+`scheduledEnabled: false` — even if you wrote a `schedule` string in
+`autonomy.json`. The intentional friction is so a fresh project can't
+accidentally start firing before you've validated it with manual sessions.
+
+Once 3-5 manual sessions on the project produce PRs you'd merge:
+
+```bash
+maestro schedule enable <slug>
+```
+
+The scheduler picks up the change on its next reconcile (default 30 s).
+You can verify the registration and next-run time at the dashboard's
+`/schedule` page or via `maestro schedule list`.
+
+To stop scheduled runs without uninstalling:
+
+```bash
+maestro pause <slug> [--reason "..."]   # blocks scheduled and auto runs
+maestro schedule disable <slug>          # unregisters the cron job
+```
+
+See [`docs/SCHEDULING.md`](./SCHEDULING.md) for the skip rules, the
+auto-pause behaviour, and the troubleshooting guide.
 
 ## Quick reference
 
@@ -145,5 +168,13 @@ maestro list                           # registered projects
 maestro run <slug> --dry-run           # print the prompt only
 maestro run <slug>                     # real session
 maestro inspect <session-id>           # session details + log tail
+maestro doctor [<slug>]                # health check
+maestro reset <slug>                   # blow away the working clone
+maestro gc                             # garbage-collect stale clones
+maestro schedule {enable,disable,list} # Phase 2 scheduling
+maestro pause <slug>                   # pause scheduled + auto runs
+maestro resume <slug>                  # clear pause / auto-pause
+maestro queue                          # running / queued / completed
+maestro skips <slug>                   # audit log per project
 maestro status                         # conductor health
 ```
