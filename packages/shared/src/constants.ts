@@ -7,7 +7,12 @@ import type { ProjectAutonomyConfig, QualityGate } from './types.js'
 
 // The prompt template version. Bump on every meaningful change to
 // SESSION_PROMPT_TEMPLATE_V1 in prompt-templates.ts. See PROMPT_DESIGN.md.
-export const PROMPT_VERSION = '1.0.0'
+//
+// 1.1.0 — Phase 1.5: split FIRST SESSION preamble into ORIENTATION MODE
+//         (empty journal + empty tasks → no code changes, no gates, no PR)
+//         vs FIRST SESSION (concrete task in state.md → proceed normally).
+//         Wires context.md `## Never Touch` items into the prompt's rule #6.
+export const PROMPT_VERSION = '1.1.0'
 
 // ─── Time budgets (seconds) ──────────────────────────────────────────
 
@@ -111,3 +116,16 @@ export const PROJECT_STACKS = [
 
 // Session log tail size returned to the dashboard. Bigger requests stream.
 export const SESSION_LOG_TAIL_LINES = 500
+
+// ─── Cost guardrails ─────────────────────────────────────────────────
+
+// A single session that costs more than this triggers a warning log line.
+// 1 USD = 100 cents.
+export const COST_WARN_PER_SESSION_CENTS = 100
+
+// Default monthly budget when MAESTRO_BUDGET_USD env var is unset.
+export const DEFAULT_MONTHLY_BUDGET_USD = 50
+
+// Threshold (fraction of monthly budget) at which the dashboard surfaces a
+// "approaching budget" alert.
+export const COST_WARN_BUDGET_FRACTION = 0.8

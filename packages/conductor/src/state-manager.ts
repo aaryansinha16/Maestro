@@ -10,11 +10,13 @@
 // behalf except in `init`.
 
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import lockfile from 'proper-lockfile'
 import {
   AutonomyFileSchema,
+  JOURNAL_FILENAME_LEGACY_RE,
+  JOURNAL_FILENAME_RE,
   JournalEntrySchema,
   MAESTRO_DIR_NAME,
   MAESTRO_PATHS,
@@ -24,6 +26,7 @@ import {
   type ProjectAutonomyConfig,
   type ProjectState,
 } from '@maestro/shared'
+import { logger } from './logger.js'
 
 // ─── Paths ───────────────────────────────────────────────────────────
 
@@ -118,14 +121,54 @@ function relPath(base: string, target: string): string {
 
 // ─── Journal ─────────────────────────────────────────────────────────
 
-const JOURNAL_FILENAME_RE = /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\.md$/
+function isJournalFilename(name: string): boolean {
+  return JOURNAL_FILENAME_RE.test(name) || JOURNAL_FILENAME_LEGACY_RE.test(name)
+}
+
+/**
+ * Migrate legacy minute-granularity journal filenames to seconds.
+ *
+ *   2026-04-15-08-00.md → 2026-04-15-08-00-00.md
+ *
+ * Idempotent: only renames files that match the legacy regex but not the
+ * new one. Returns the number of files migrated. Safe to call on every
+ * read because it's a no-op once journals are on the new format.
+ */
+export async function migrateJournalFilenames(projectRoot: string): Promise<number> {
+  const paths = projectPaths(projectRoot)
+  if (!existsSync(paths.journalDir)) return 0
+  const entries = await readdir(paths.journalDir)
+  let migrated = 0
+  for (const name of entries) {
+    if (JOURNAL_FILENAME_RE.test(name)) continue
+    if (!JOURNAL_FILENAME_LEGACY_RE.test(name)) continue
+    const newName = name.replace(/\.md$/, '-00.md')
+    const fullOld = join(paths.journalDir, name)
+    const fullNew = join(paths.journalDir, newName)
+    if (existsSync(fullNew)) {
+      logger.warn(
+        { fullOld, fullNew },
+        'journal migration target already exists — leaving legacy filename',
+      )
+      continue
+    }
+    await rename(fullOld, fullNew)
+    migrated++
+  }
+  if (migrated > 0) {
+    logger.info({ projectRoot, migrated }, 'migrated legacy journal filenames')
+  }
+  return migrated
+}
 
 export async function listJournalEntries(projectRoot: string): Promise<JournalEntry[]> {
   const paths = projectPaths(projectRoot)
   if (!existsSync(paths.journalDir)) return []
 
+  await migrateJournalFilenames(projectRoot)
+
   const filenames = (await readdir(paths.journalDir))
-    .filter((f) => JOURNAL_FILENAME_RE.test(f))
+    .filter(isJournalFilename)
     .sort() // lexicographic == chronological for ISO-ish names
 
   const entries: JournalEntry[] = []
@@ -153,16 +196,22 @@ export async function listRecentJournal(
 }
 
 function filenameToIso(filename: string): string {
-  // 2026-04-15-08-00.md → 2026-04-15T08:00:00.000Z
-  const match = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})\.md$/.exec(filename)
-  if (!match) {
-    throw new MaestroError('STATE_PARSE_FAILED', {
-      message: `Bad journal filename: ${filename}`,
-      context: { filename },
-    })
+  // 2026-04-15-08-00-00.md → 2026-04-15T08:00:00.000Z
+  // 2026-04-15-08-00.md (legacy) → 2026-04-15T08:00:00.000Z
+  const withSecs = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})\.md$/.exec(filename)
+  if (withSecs) {
+    const [, y, m, d, hh, mm, ss] = withSecs
+    return `${y}-${m}-${d}T${hh}:${mm}:${ss}.000Z`
   }
-  const [, y, m, d, hh, mm] = match
-  return `${y}-${m}-${d}T${hh}:${mm}:00.000Z`
+  const noSecs = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})\.md$/.exec(filename)
+  if (noSecs) {
+    const [, y, m, d, hh, mm] = noSecs
+    return `${y}-${m}-${d}T${hh}:${mm}:00.000Z`
+  }
+  throw new MaestroError('STATE_PARSE_FAILED', {
+    message: `Bad journal filename: ${filename}`,
+    context: { filename },
+  })
 }
 
 // ─── Init flow ───────────────────────────────────────────────────────
@@ -240,7 +289,7 @@ export async function verifyAgentTouchedMaestroDir(
   const paths = projectPaths(projectRoot)
   const stateStat = await stat(paths.state)
   const stateUpdated = stateStat.mtimeMs > before.stateMTimeMs
-  const after = (await readdir(paths.journalDir).catch(() => [])).filter((f) => JOURNAL_FILENAME_RE.test(f))
+  const after = (await readdir(paths.journalDir).catch(() => [])).filter(isJournalFilename)
   const newFiles = after.filter((f) => !before.journalFilenames.includes(f))
   return {
     stateUpdated,
@@ -255,7 +304,7 @@ export async function snapshotMaestroDir(projectRoot: string): Promise<{
 }> {
   const paths = projectPaths(projectRoot)
   const stateStat = await stat(paths.state)
-  const journal = (await readdir(paths.journalDir).catch(() => [])).filter((f) => JOURNAL_FILENAME_RE.test(f))
+  const journal = (await readdir(paths.journalDir).catch(() => [])).filter(isJournalFilename)
   return { stateMTimeMs: stateStat.mtimeMs, journalFilenames: journal }
 }
 

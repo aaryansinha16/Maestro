@@ -19,8 +19,8 @@ import {
   QUALITY_GATE_NAMES,
   type ProjectAutonomyConfig,
 } from '@maestro/shared'
-import { initMaestroDir } from '@maestro/conductor'
-import { failWith, info, ok } from './util.js'
+import { initMaestroDir, scaffoldContextMd } from '@maestro/conductor'
+import { failWith, info, ok, warn } from './util.js'
 
 export interface InitOptions {
   /** When true, skip the dirty-git-tree check. Useful for tests. */
@@ -34,6 +34,12 @@ export interface InitOptions {
   timeBudgetMinutes?: number
   qualityGates?: ProjectAutonomyConfig['qualityGates']
   branchPrefix?: string
+  /**
+   * When true, spawn a one-shot Claude run to draft a real context.md
+   * from the codebase. Costs Claude tokens; falls back to the cheap
+   * scrape if it fails.
+   */
+  scaffoldContext?: boolean
 }
 
 export async function runInit(rawPath: string, options: InitOptions = {}): Promise<void> {
@@ -52,12 +58,29 @@ export async function runInit(rawPath: string, options: InitOptions = {}): Promi
   })
   const autonomy = buildAutonomy(responses)
 
+  let contextMd = seed.contextMd
+  if (options.scaffoldContext) {
+    info('scaffolding context.md via claude (this takes ~1-2 minutes on a real codebase)…')
+    try {
+      const result = await scaffoldContextMd({ projectRoot })
+      contextMd = result.contextMd
+      ok(
+        `context.md scaffolded (${result.contextMd.split('\n').length} lines, ${
+          result.costCents !== null ? `$${(result.costCents / 100).toFixed(2)}` : 'cost n/a'
+        }, ${Math.round(result.durationMs / 1000)}s)`,
+      )
+    } catch (err) {
+      warn('context scaffolder failed; falling back to manual scrape')
+      console.error(err instanceof Error ? `  ${err.message}` : err)
+    }
+  }
+
   info(`writing .maestro/ to ${projectRoot}`)
   try {
     await initMaestroDir({
       projectRoot,
       state: stateBody,
-      context: seed.contextMd,
+      context: contextMd,
       autonomy,
     })
   } catch (err) {

@@ -29,10 +29,25 @@ export interface SessionPromptContext {
   task: string
   /** Quality gates that will run after commit. */
   qualityGates: QualityGate[]
-  /** Project-specific never-touch list, drawn from context.md. */
+  /**
+   * Project-specific never-touch list. Phase 1.5 wires this up by parsing
+   * the `## Project-specific NEVER list` section of context.md (case-insensitive,
+   * accepts `## Never Touch` too). When the worker passes a non-empty array
+   * here, the prompt's rule #6 expands with these items.
+   */
   projectSpecificNeverTouch?: string[]
   /** True when .maestro/journal/ is empty for this project. */
   isFirstSession?: boolean
+  /**
+   * True when this session has no concrete task to work on (empty
+   * "Next Concrete Tasks" + no journal). The agent is told to use the
+   * session for orientation only — read, observe, document — and the
+   * worker will skip quality gates and refuse to open a PR for it.
+   *
+   * Set automatically by buildSessionPrompt when isFirstSession is true and
+   * `task` is empty / the placeholder string. Callers can also force it.
+   */
+  isOrientationOnly?: boolean
   /** Days since the last session. Used for the "long pause" preamble. */
   daysSinceLastSession?: number
   /** Recent developer commits in last 24h, if any. Triggers caution preamble. */
@@ -65,7 +80,13 @@ export function buildSessionPrompt(ctx: SessionPromptContext): string {
     .map((item) => `   - ${item}`)
     .join('\n')
 
-  const preamble = buildPreamble(ctx)
+  // Orientation mode kicks in when this is a fresh project AND there's no
+  // concrete task to act on. The first session on a project that already
+  // has tasks is just a normal session — the FIRST SESSION preamble used to
+  // contradict that, so Phase 1.5 corrects it.
+  const orientationOnly = isOrientationModeFromContext(ctx)
+  const enrichedCtx: SessionPromptContext = { ...ctx, isOrientationOnly: orientationOnly }
+  const preamble = buildPreamble(enrichedCtx)
 
   return SESSION_PROMPT_TEMPLATE_V1({
     projectName: ctx.projectName,
@@ -82,6 +103,26 @@ export function buildSessionPrompt(ctx: SessionPromptContext): string {
     preamble,
     promptVersion: PROMPT_VERSION,
   })
+}
+
+/**
+ * Detect orientation mode for a session prompt context. Exported so the
+ * worker can take the same decision (skip quality gates, refuse to open a
+ * PR) using exactly the same logic as the prompt.
+ */
+export function isOrientationModeFromContext(ctx: {
+  isOrientationOnly?: boolean
+  isFirstSession?: boolean
+  task: string
+  recentJournal?: Array<unknown>
+}): boolean {
+  if (ctx.isOrientationOnly) return true
+  const journalEmpty = !ctx.recentJournal || ctx.recentJournal.length === 0
+  const taskEmpty =
+    ctx.task.trim().length === 0 ||
+    /^_\(No concrete task supplied/.test(ctx.task) ||
+    /^Pick the most important task/.test(ctx.task)
+  return journalEmpty && taskEmpty
 }
 
 export function buildFixupTurnPrompt(ctx: FixupTurnPromptContext): string {
@@ -157,7 +198,9 @@ ${i.gatesSection}
 
 5. Before finishing, you MUST:
    a. Update .maestro/state.md to reflect what was done and what's next
-   b. Append a session summary to .maestro/journal/{timestamp}.md
+   b. Append a session summary to .maestro/journal/YYYY-MM-DD-HH-MM-SS.md
+      (UTC timestamp; seconds-granularity matters when sessions land in the
+      same minute — pad with zeros, e.g. 2026-04-15-08-00-12.md)
    c. Commit all changes (including .maestro/ updates) on a feature branch
    d. The feature branch name should be: maestro/${i.projectSlug}/{short-description}
 
@@ -226,20 +269,39 @@ Start by acknowledging your task. Then proceed.
 function buildPreamble(ctx: SessionPromptContext): string {
   const parts: string[] = []
 
-  if (ctx.isFirstSession) {
+  if (ctx.isOrientationOnly) {
+    parts.push(
+      [
+        '== ORIENTATION MODE ==',
+        '',
+        "This project has no concrete tasks queued and no prior session journal.",
+        'Treat this session as orientation only:',
+        '',
+        '1. Read README.md and the project manifest (package.json, pyproject.toml, etc.)',
+        '2. Explore the directory structure briefly',
+        '3. Expand .maestro/context.md with what you learn — architecture, conventions, gotchas',
+        '4. Propose 3–5 concrete candidate tasks for state.md "Next Concrete Tasks"',
+        '5. DO NOT make code changes in orientation mode — only update .maestro/ files',
+        '',
+        'No quality gates will run. No PR will be opened. The next session, with',
+        "state.md populated, will begin real work.",
+      ].join('\n'),
+    )
+  } else if (ctx.isFirstSession) {
     parts.push(
       [
         '== FIRST SESSION ==',
         '',
-        'This is the first Maestro session for this project. Before doing other work:',
+        'This is the first Maestro session for this project, but state.md already',
+        "lists a concrete task — treat that task as authoritative and proceed",
+        'normally. Before diving in:',
         '',
-        '1. Read the README.md and the package.json (or equivalent)',
-        '2. Explore the directory structure briefly',
-        '3. If context.md is sparse, expand it with what you have learned',
-        '4. Identify 3-5 candidate tasks for state.md "Next Concrete Tasks"',
-        '5. Don\'t make code changes in this first session — just observe and document',
+        '1. Skim README.md and the project manifest (package.json, etc.)',
+        '2. Note any conventions or gotchas you discover and add them to context.md',
+        '3. Then complete your task per the rules below',
         '',
-        'The first session is for orientation. The next session will start work.',
+        'You have permission to make code changes — the explicit task in state.md',
+        'overrides any "orientation only" intuition.',
       ].join('\n'),
     )
   }

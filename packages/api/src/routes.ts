@@ -75,6 +75,31 @@ export const SessionLogResponseSchema = z.object({
   sizeBytes: z.number().int().nonnegative().optional(),
 })
 
+// ─── /api/costs ──────────────────────────────────────────────────────
+
+export const CostAggregationsResponseSchema = z.object({
+  monthCents: z.number().int().nonnegative(),
+  todayCents: z.number().int().nonnegative(),
+  monthlyBudgetCents: z.number().int().nonnegative(),
+  budgetFractionUsed: z.number().min(0),
+  perProject: z.array(
+    z.object({
+      projectId: z.string(),
+      projectSlug: z.string(),
+      sessionCount: z.number().int().nonnegative(),
+      monthCents: z.number().int().nonnegative(),
+      prCount: z.number().int().nonnegative(),
+      centsPerPr: z.number().int().nonnegative().nullable(),
+    }),
+  ),
+  dailySeries: z.array(
+    z.object({
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      cents: z.number().int().nonnegative(),
+    }),
+  ),
+})
+
 // ─── /api/prs ────────────────────────────────────────────────────────
 
 export const ListPullRequestsQuerySchema = z.object({
@@ -98,7 +123,10 @@ export const ROUTES = {
   listSessions: { method: 'GET', path: '/api/sessions' },
   getSession: { method: 'GET', path: '/api/sessions/:id' },
   getSessionLog: { method: 'GET', path: '/api/sessions/:id/log' },
+  getSessionPrompt: { method: 'GET', path: '/api/sessions/:id/prompt' },
+  getSessionDiff: { method: 'GET', path: '/api/sessions/:id/diff' },
   listPullRequests: { method: 'GET', path: '/api/prs' },
+  getCosts: { method: 'GET', path: '/api/costs' },
 } as const
 
 export type RouteKey = keyof typeof ROUTES

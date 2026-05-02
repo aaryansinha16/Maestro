@@ -142,7 +142,9 @@ Wire the conductor to broadcast session events over WS at /events
 
 5. Before finishing, you MUST:
    a. Update .maestro/state.md to reflect what was done and what's next
-   b. Append a session summary to .maestro/journal/{timestamp}.md
+   b. Append a session summary to .maestro/journal/YYYY-MM-DD-HH-MM-SS.md
+      (UTC timestamp; seconds-granularity matters when sessions land in the
+      same minute — pad with zeros, e.g. 2026-04-15-08-00-12.md)
    c. Commit all changes (including .maestro/ updates) on a feature branch
    d. The feature branch name should be: maestro/testproject/{short-description}
 
@@ -206,4 +208,4 @@ After your work, state.md should reflect:
 
 Start by acknowledging your task. Then proceed.
 
-[prompt-version: 1.0.0]
+[prompt-version: 1.1.0]

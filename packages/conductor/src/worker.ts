@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import simpleGit, { type SimpleGit } from 'simple-git'
 import {
+  COST_WARN_PER_SESSION_CENTS,
   FIXUP_TURN_BUDGET_SECONDS,
   LOGS_SUBDIR,
   MaestroError,
@@ -32,6 +33,7 @@ import {
   WORK_SUBDIR,
   buildFixupTurnPrompt,
   buildSessionPrompt,
+  isOrientationModeFromContext,
   type Project,
   type SessionStatus,
   type SessionResult,
@@ -175,7 +177,8 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
 
   // Step 4: build prompt ------------------------------------------------------------
   const task = deriveTaskFromState(maestro.state.raw)
-  const prompt = buildSessionPrompt({
+  const neverTouch = parseNeverTouchSection(maestro.context)
+  const promptCtx = {
     projectName: project.slug,
     projectSlug: project.slug,
     timeBudgetSeconds: project.autonomyConfig.timeBudget,
@@ -186,7 +189,10 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
     task,
     qualityGates: project.autonomyConfig.qualityGates,
     isFirstSession: recentJournal.length === 0,
-  })
+    projectSpecificNeverTouch: neverTouch,
+  }
+  const orientationMode = isOrientationModeFromContext(promptCtx)
+  const prompt = buildSessionPrompt(promptCtx)
 
   if (input.dryRun) {
     logger.info({ projectSlug: project.slug, promptBytes: prompt.length }, 'dry-run prompt')
@@ -274,6 +280,21 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
       logPath,
       fixupTurnRan: didRunFixupTurn,
     }
+  }
+
+  // Orientation mode: agent should have updated .maestro/ but made no code
+  // changes. Skip gates entirely and never open a PR. The branch (if any)
+  // is preserved so the developer can review what the agent observed.
+  if (orientationMode) {
+    if (!touchedMaestro.stateUpdated && !touchedMaestro.journalAppended) {
+      return baseFinalize('failed', {
+        notes: 'orientation session ran but did not update state.md or journal',
+      })
+    }
+    return baseFinalize('completed', {
+      notes:
+        'orientation session — context.md / state.md updated, no code changes, no PR opened',
+    })
   }
 
   if (filesChanged.length === 0) {
@@ -451,6 +472,12 @@ function logRunResult(r: ClaudeRunResult): void {
     },
     'claude session finished',
   )
+  if (r.costCents !== null && r.costCents > COST_WARN_PER_SESSION_CENTS) {
+    logger.warn(
+      { costCents: r.costCents, threshold: COST_WARN_PER_SESSION_CENTS },
+      'expensive session — cost above threshold',
+    )
+  }
 }
 
 function recordGateResults(
@@ -477,6 +504,24 @@ interface PrepareWorkingDirInput {
   developerEmail: string
 }
 
+// Build artefact directories that we deliberately keep across sessions
+// (ADR-019). Reinstalling these on every refresh burns Claude budget on
+// `pnpm install` instead of actual work. They're regenerated lazily by
+// the project's own tooling and blown away by `maestro reset` / `gc`.
+const CACHE_DIRS = [
+  'node_modules',
+  '.pnpm-store',
+  'target',
+  'vendor',
+  '.venv',
+  '.next',
+  '.turbo',
+  '.cache',
+  '__pycache__',
+  'build',
+  'dist',
+] as const
+
 async function prepareWorkingDir(input: PrepareWorkingDirInput): Promise<void> {
   await mkdir(dirname(input.workingRoot), { recursive: true })
   const exists = existsSync(input.workingRoot)
@@ -488,7 +533,12 @@ async function prepareWorkingDir(input: PrepareWorkingDirInput): Promise<void> {
       await git.fetch(['--all', '--prune'])
       await git.checkout(input.baseBranch)
       await git.reset(['--hard', `origin/${input.baseBranch}`])
-      await git.clean('f', ['-d', '-x'])
+      // Clean only untracked source files; preserve cached build artefacts
+      // listed in CACHE_DIRS via -e exclude flags. Without -x we don't
+      // touch ignored files (.env etc) which is fine — managed projects
+      // don't keep secrets in working clones.
+      const cleanFlags = ['-fd', ...CACHE_DIRS.flatMap((d) => ['-e', d])]
+      await git.raw(['clean', ...cleanFlags])
       await configureGitIdentity(git, input.developerName, input.developerEmail)
       return
     } catch (err) {
@@ -519,22 +569,83 @@ async function configureGitIdentity(git: SimpleGit, name: string, email: string)
 
 /**
  * Pull a single concrete task out of state.md by reading the first
- * unchecked checkbox under "Next Concrete Tasks". Falls back to a
- * permissive note that lets the agent decide.
+ * unchecked checkbox under "Next Concrete Tasks". Returns an empty string
+ * when no concrete task exists — the prompt builder then routes to
+ * orientation mode rather than asking the agent to "pick something."
  */
 function deriveTaskFromState(stateMd: string): string {
   const sectionMatch = /##\s*Next Concrete Tasks\s*\n([\s\S]*?)(\n##\s|$)/.exec(stateMd)
   const body = sectionMatch?.[1] ?? ''
   const firstUnchecked = /^-\s*\[\s*\]\s*(.+)$/m.exec(body)
   if (firstUnchecked?.[1]) {
-    return firstUnchecked[1].trim()
+    const candidate = firstUnchecked[1].trim()
+    // Skip placeholder bullets seeded by `maestro init` so a fresh repo
+    // routes to orientation mode rather than telling the agent "add 3-5
+    // concrete tasks here" as if it were a task.
+    if (/^_.*_$/.test(candidate)) return ''
+    return candidate
   }
-  return 'Pick the most important task from state.md "Next Concrete Tasks" — or do nothing and explain why in the journal.'
+  return ''
+}
+
+/**
+ * Read context.md and pull "## Project-specific NEVER list" or "## Never
+ * Touch" items out as bullets. The agent already reads context.md, but
+ * surfacing these as a structured list lets the prompt's rule #6 quote
+ * them verbatim — making the boundary unmistakable rather than something
+ * the agent has to extract on its own.
+ */
+function parseNeverTouchSection(contextMd: string): string[] {
+  const heading = /^##\s*(?:Project-specific NEVER list|Never Touch|Never-touch)\b.*$/im
+  const match = heading.exec(contextMd)
+  if (!match || match.index === undefined) return []
+  const tail = contextMd.slice(match.index + match[0].length)
+  const sectionEnd = /\n##\s/.exec(tail)
+  const body = sectionEnd ? tail.slice(0, sectionEnd.index) : tail
+  return body
+    .split('\n')
+    .map((line) => {
+      const m = /^\s*[-*]\s+(.+?)\s*$/.exec(line)
+      return m?.[1] ?? null
+    })
+    .filter((s): s is string => s !== null && s.length > 0 && !/^_.*_$/.test(s))
+}
+
+// ─── Working-dir maintenance API ─────────────────────────────────────
+
+/**
+ * Blow away the working clone for a slug. Used by `maestro reset` and
+ * `maestro gc`. Safe to call when the clone doesn't exist.
+ */
+export async function destroyWorkingDir(dataDir: string, slug: string): Promise<void> {
+  const path = workingDirFor(dataDir, slug)
+  if (!existsSync(path)) return
+  await rm(path, { recursive: true, force: true })
+}
+
+/**
+ * The age of the working clone in days, by mtime of the .git directory.
+ * Used by `maestro gc` to decide which clones to blow away.
+ */
+export async function workingDirAgeDays(dataDir: string, slug: string): Promise<number | null> {
+  const path = workingDirFor(dataDir, slug)
+  const gitDir = join(path, '.git')
+  if (!existsSync(gitDir)) return null
+  const { stat: statFn } = await import('node:fs/promises')
+  const info = await statFn(gitDir).catch(() => null)
+  if (!info) return null
+  return (Date.now() - info.mtimeMs) / (1000 * 60 * 60 * 24)
 }
 
 // ─── Re-exports for tests ────────────────────────────────────────────
 
-export { sessionLogPath, workingDirFor, deriveTaskFromState }
+export {
+  sessionLogPath,
+  workingDirFor,
+  deriveTaskFromState,
+  parseNeverTouchSection,
+  CACHE_DIRS,
+}
 
 // Type re-export so call-sites can pin to the local definition.
 export type WorkerQualityGate = QualityGate
