@@ -24,6 +24,8 @@ import type {
   ScheduledRunActionSchema,
   ScheduleSkipReasonSchema,
   PrFeedbackSchema,
+  SessionTurnSchema,
+  SessionTurnStatusSchema,
 } from './schemas.js'
 import type { z } from 'zod'
 import type { PROJECT_STACKS } from './constants.js'
@@ -127,3 +129,7 @@ export type ScheduledRun = z.infer<typeof ScheduledRunSchema>
 
 // Phase 4: PR feedback loop.
 export type PrFeedback = z.infer<typeof PrFeedbackSchema>
+
+// Phase 4 / Sub 2: session turns.
+export type SessionTurnStatus = z.infer<typeof SessionTurnStatusSchema>
+export type SessionTurn = z.infer<typeof SessionTurnSchema>

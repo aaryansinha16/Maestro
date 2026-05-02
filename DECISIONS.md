@@ -395,4 +395,49 @@ Order:
 
 ---
 
+## ADR-024: Opt-in session continuation until budget exhausted
+
+**Date**: 2026-05-02
+**Decision**: Phase 4 / Sub 2 adds two `autonomy.json` fields — `continueUntilBudget` (default `false`) and `minTimeForContinuation` (default 900 s) — that turn one logical session into a chain of "turns" against the same `MAESTRO_DATA_DIR/work/<slug>` clone. Each turn opens its own PR. The session row's `pr_number` reflects the most recent turn; per-turn detail lives in a new `session_turns` table.
+
+After turn N completes successfully, the worker:
+1. Re-reads `.maestro/state.md` (the agent updated it on N's branch).
+2. If there are more "Next Concrete Tasks" AND `total_budget − elapsed − overhead ≥ minTimeForContinuation`, calls `softResetForNextTurn(workingRoot, base)`:
+   - Snapshots `.maestro/` from N's branch tip
+   - `git fetch origin <base>`, checkout, hard-reset to `origin/<base>`
+   - Restores the snapshotted `.maestro/` over the clean base — uncommitted, ready to be carried into N+1's branch by the agent's first commit.
+3. Spawns Claude with a fresh budget = `remaining − CONTINUATION_TURN_OVERHEAD_SECONDS` and a CONTINUATION preamble in the prompt naming the turn number and previous PR numbers.
+4. Records the new turn in `session_turns`. Loops until the predicate fails.
+
+The chain stops when:
+- the last turn's status is anything other than `completed`,
+- the last turn produced no PR (orientation, no-changes),
+- the next turn's budget would fall below `minTimeForContinuation`,
+- the agent removed the last task from `state.md` (heuristic via `deriveTaskFromState`),
+- or `softResetForNextTurn` fails (e.g. base branch missing).
+
+**Reasoning**: Phase 1 sessions used 10–20 % of their 45-minute budget and stopped. The "ONE task per session" rule from PROMPT_DESIGN.md is correct for review hygiene, but it conflates "one task per *commit*" with "one task per *budget window*". With `level: full` already auto-merging each turn's PR (ADR-023), each turn lands as its own squash commit on main, so review hygiene is preserved even when a budget produces three PRs back-to-back. Continuation is the natural next step.
+
+**Why opt-in**: Multi-turn sessions multiply token consumption against the developer's Pro/Max subscription. The default is `false` so existing projects do not silently start consuming N× more. The developer flips it on per project once they trust the loop.
+
+**Why the soft-reset dance**: The agent's `state.md` updates live on its feature branch, not main. If we just reset to main between turns, the next turn would re-read the OLD state.md (with the task we just completed). The agent would then either redo the same task or get confused. Snapshotting `.maestro/` and restoring it on main is the smallest possible change that preserves the agent's reasoning thread across the boundary.
+
+**Subscription cost impact**:
+- Per logical session with N turns: ~N× input tokens (each turn re-reads context.md, state.md, journals, plus Sub 1's feedback section).
+- Output tokens scale with the work each turn does (typically smaller than input).
+- Each fixup turn within a turn (ADR-013) also re-spawns Claude. So a session with two turns and one gate failure consumes three Claude invocations.
+- Recommendation in `docs/PROJECT_ONBOARDING.md`: enable on one project first, monitor rate-limit dashboard for a week, then expand.
+
+**Alternatives considered**:
+- (a) **Single-turn, longer budget** — increase `timeBudget` instead of multi-turn. Rejected because Claude Code's reliability degrades on very long single sessions and the agent doesn't naturally chunk work into PR-sized units without an explicit prompt boundary.
+- (b) **Cherry-pick `.maestro/` commits across turns** instead of snapshot-restore. Rejected as more fragile (requires turn 1's commits to be cleanly separable, which we can't guarantee).
+- (c) **Force the agent to commit `.maestro/` to main directly** (not a feature branch). Rejected — contradicts ADR-005 (PR-only default) and would split state changes from code changes in confusing ways.
+
+**Implications**:
+- New table `session_turns`. Existing single-turn sessions will have exactly one row in this table going forward; pre-existing sessions have none, which the dashboard handles by falling back to the parent `sessions` row.
+- The session's `pr_number` continues to reflect "the latest PR" so existing dashboards keep working. The per-turn drill-down lives in `/api/sessions/:id` once the dashboard surfaces it (Sub 7 territory).
+- `PROMPT_VERSION` is unchanged at `1.2.0` — the CONTINUATION preamble is opt-in via the prompt context, doesn't affect single-turn sessions.
+
+---
+
 *Add new decisions above this line. Keep them numbered sequentially.*

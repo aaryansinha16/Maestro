@@ -11,6 +11,7 @@ import {
   JobSchema,
   ScheduledRunSchema,
   PrFeedbackSchema,
+  SessionTurnSchema,
   type Project,
   type ProjectAutonomyConfig,
   type Session,
@@ -26,6 +27,8 @@ import {
   type ScheduledRunAction,
   type ScheduleSkipReason,
   type PrFeedback,
+  type SessionTurn,
+  type SessionTurnStatus,
   MaestroError,
 } from '@maestro/shared'
 
@@ -887,6 +890,131 @@ export class PrFeedbackRepository {
       )
       .run(projectId, prNumber, stamp)
   }
+}
+
+// ─── Phase 4 / Sub 2: session turns ──────────────────────────────────
+
+interface SessionTurnRow {
+  id: number
+  session_id: string
+  turn_number: number
+  branch_name: string | null
+  pr_number: number | null
+  pr_url: string | null
+  status: SessionTurnStatus
+  cost_cents: number | null
+  started_at: string
+  ended_at: string | null
+  termination_cause: string | null
+  notes: string | null
+}
+
+export interface CreateSessionTurnInput {
+  sessionId: string
+  turnNumber: number
+}
+
+export interface UpdateSessionTurnInput {
+  branchName?: string | null
+  prNumber?: number | null
+  prUrl?: string | null
+  status?: SessionTurnStatus
+  costCents?: number | null
+  endedAt?: string | null
+  terminationCause?: TerminationCause | null
+  notes?: string | null
+}
+
+export class SessionTurnRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  insert(input: CreateSessionTurnInput): SessionTurn {
+    const startedAt = new Date().toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO session_turns (session_id, turn_number, status, started_at)
+         VALUES (?, ?, 'completed', ?)`,
+      )
+      .run(input.sessionId, input.turnNumber, startedAt)
+    const row = this.db
+      .prepare<[string, number], SessionTurnRow>(
+        `SELECT * FROM session_turns WHERE session_id = ? AND turn_number = ?`,
+      )
+      .get(input.sessionId, input.turnNumber)
+    if (!row) throw new MaestroError('INTERNAL_ERROR', { message: 'session_turn insert lost' })
+    return rowToSessionTurn(row)
+  }
+
+  update(sessionId: string, turnNumber: number, patch: UpdateSessionTurnInput): SessionTurn {
+    const map: Record<string, unknown> = {
+      branch_name: patch.branchName,
+      pr_number: patch.prNumber,
+      pr_url: patch.prUrl,
+      status: patch.status,
+      cost_cents: patch.costCents,
+      ended_at: patch.endedAt,
+      termination_cause: patch.terminationCause,
+      notes: patch.notes,
+    }
+    const setParts: string[] = []
+    const values: unknown[] = []
+    for (const column of Object.keys(map)) {
+      const key = column
+      const value = map[key]
+      if (value === undefined) continue
+      setParts.push(`${column} = ?`)
+      values.push(value)
+    }
+    if (setParts.length === 0) {
+      const existing = this.findByTurn(sessionId, turnNumber)
+      if (!existing) throw new MaestroError('INTERNAL_ERROR', { message: `session_turn ${sessionId}/${turnNumber} missing` })
+      return existing
+    }
+    values.push(sessionId, turnNumber)
+    this.db
+      .prepare(
+        `UPDATE session_turns SET ${setParts.join(', ')} WHERE session_id = ? AND turn_number = ?`,
+      )
+      .run(...values)
+    const row = this.findByTurn(sessionId, turnNumber)
+    if (!row) throw new MaestroError('INTERNAL_ERROR', { message: 'session_turn update lost' })
+    return row
+  }
+
+  findByTurn(sessionId: string, turnNumber: number): SessionTurn | null {
+    const row = this.db
+      .prepare<[string, number], SessionTurnRow>(
+        `SELECT * FROM session_turns WHERE session_id = ? AND turn_number = ?`,
+      )
+      .get(sessionId, turnNumber)
+    return row ? rowToSessionTurn(row) : null
+  }
+
+  listForSession(sessionId: string): SessionTurn[] {
+    const rows = this.db
+      .prepare<[string], SessionTurnRow>(
+        `SELECT * FROM session_turns WHERE session_id = ? ORDER BY turn_number ASC`,
+      )
+      .all(sessionId)
+    return rows.map(rowToSessionTurn)
+  }
+}
+
+function rowToSessionTurn(row: SessionTurnRow): SessionTurn {
+  return SessionTurnSchema.parse({
+    id: row.id,
+    sessionId: row.session_id,
+    turnNumber: row.turn_number,
+    branchName: row.branch_name,
+    prNumber: row.pr_number,
+    prUrl: row.pr_url,
+    status: row.status,
+    costCents: row.cost_cents,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    terminationCause: row.termination_cause,
+    notes: row.notes,
+  })
 }
 
 function rowToPrFeedback(row: PrFeedbackRow): PrFeedback {
