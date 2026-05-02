@@ -142,14 +142,17 @@ async function setupHarness(scenario: 'all-good' | 'failing-gate'): Promise<Harn
 interface FakeGitHub extends GitHubClient {
   created: CreatePullRequestInput[]
   labelsAdded: AddLabelsInput[]
+  merged: { prNumber: number; method?: string }[]
 }
 
-function fakeGitHub(): FakeGitHub {
+function fakeGitHub(opts: { mergeBlocked?: boolean } = {}): FakeGitHub {
   const created: CreatePullRequestInput[] = []
   const labelsAdded: AddLabelsInput[] = []
+  const merged: { prNumber: number; method?: string }[] = []
   return {
     created,
     labelsAdded,
+    merged,
     async createPullRequest(req) {
       created.push(req)
       return {
@@ -164,6 +167,13 @@ function fakeGitHub(): FakeGitHub {
         mergedAt: null,
         sessionId: null,
       }
+    },
+    async mergePullRequest(req) {
+      merged.push({ prNumber: req.prNumber, method: req.method })
+      if (opts.mergeBlocked) {
+        return { status: 'blocked', reason: 'branch protection requires review' }
+      }
+      return { status: 'merged', sha: 'abcdef0123456789' }
     },
     async addLabels(req) {
       labelsAdded.push(req)
@@ -272,6 +282,78 @@ describe('runSession (integration)', () => {
       expect(result.fixupTurnRan).toBe(true)
     }
   }, 90_000)
+
+  it('level: full auto-merges the PR after creation', async () => {
+    harness = await setupHarness('all-good')
+    const { db, config, slug } = harness
+    const projects = new ProjectRepository(db.db)
+    projects.updateAutonomyConfig(slug, { ...TEST_AUTONOMY, level: 'full' })
+    const project = projects.findBySlug(slug)
+    if (!project) throw new Error('project missing')
+
+    const gh = fakeGitHub()
+    process.env['MAESTRO_MOCK_INLINE'] = JSON.stringify({
+      files: { 'README.md': '# Fixture\n\nAuto-merge path.\n' },
+      branch: `maestro/${slug}/full-mode`,
+      commitMessage: 'chore: full-mode change',
+      stateBody:
+        '# Current State\n\n## Focus\nFull mode.\n\n## Next Concrete Tasks\n- [ ] x\n\n## Blockers\n\n_(none)_\n\n## Recent Context\n\nx.\n\n## Notes\n\n',
+      journalFilename: '2026-04-29-09-00.md',
+      journalBody: '# Session 2026-04-29T09:00:00.000Z\n\n## Goal\nx.\n',
+    })
+
+    const result = await runSession({
+      db: db.db,
+      config,
+      project,
+      claudeBin: MOCK_CLAUDE,
+      githubClient: gh,
+      skipClaudeProbe: true,
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.prNumber).toBe(42)
+    expect(gh.created).toHaveLength(1)
+    expect(gh.created[0]?.draft).toBe(false)
+    expect(gh.merged).toHaveLength(1)
+    expect(gh.merged[0]?.prNumber).toBe(42)
+    expect(gh.merged[0]?.method).toBe('squash')
+    expect(result.notes).toContain('auto-merged')
+  }, 60_000)
+
+  it('level: full leaves PR open with a note when auto-merge is blocked', async () => {
+    harness = await setupHarness('all-good')
+    const { db, config, slug } = harness
+    const projects = new ProjectRepository(db.db)
+    projects.updateAutonomyConfig(slug, { ...TEST_AUTONOMY, level: 'full' })
+    const project = projects.findBySlug(slug)
+    if (!project) throw new Error('project missing')
+
+    const gh = fakeGitHub({ mergeBlocked: true })
+    process.env['MAESTRO_MOCK_INLINE'] = JSON.stringify({
+      files: { 'README.md': '# Fixture\n\nBlocked merge.\n' },
+      branch: `maestro/${slug}/full-blocked`,
+      commitMessage: 'chore: blocked merge',
+      stateBody:
+        '# Current State\n\n## Focus\nx.\n\n## Next Concrete Tasks\n- [ ] x\n\n## Blockers\n\n_(none)_\n\n## Recent Context\n\nx.\n\n## Notes\n\n',
+      journalFilename: '2026-04-29-10-00.md',
+      journalBody: '# Session 2026-04-29T10:00:00.000Z\n\n## Goal\nx.\n',
+    })
+
+    const result = await runSession({
+      db: db.db,
+      config,
+      project,
+      claudeBin: MOCK_CLAUDE,
+      githubClient: gh,
+      skipClaudeProbe: true,
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.prNumber).toBe(42)
+    expect(gh.merged).toHaveLength(1)
+    expect(result.notes).toContain('auto-merge blocked')
+  }, 60_000)
 
   it('refuses to run a second session for the same project (lock)', async () => {
     harness = await setupHarness('all-good')
