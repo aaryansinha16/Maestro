@@ -37,6 +37,16 @@ export const FIXUP_TURN_BUDGET_SECONDS = 15 * 60
 
 export const DEFAULT_QUALITY_GATES: QualityGate[] = ['test', 'lint', 'typecheck']
 
+/** 15 minutes. Don't spawn a continuation turn with less budget than this. */
+export const DEFAULT_MIN_TIME_FOR_CONTINUATION_SECONDS = 15 * 60
+
+/**
+ * Per-turn safety margin we subtract from "remaining budget" when deciding
+ * whether to continue and what budget to give the next turn. Covers gate
+ * runs, push, PR creation, and a small grace.
+ */
+export const CONTINUATION_TURN_OVERHEAD_SECONDS = 60
+
 export const DEFAULT_AUTONOMY_CONFIG: ProjectAutonomyConfig = {
   level: 'pr-only',
   schedule: '0 */6 * * *',
@@ -56,6 +66,10 @@ export const DEFAULT_AUTONOMY_CONFIG: ProjectAutonomyConfig = {
   // enables per project after manual sessions prove the project is healthy.
   scheduledEnabled: false,
   priority: 'normal',
+  // Phase 4 / Sub 2: opt-in by default to keep token consumption predictable
+  // until the developer validates per project. See ADR-024.
+  continueUntilBudget: false,
+  minTimeForContinuation: DEFAULT_MIN_TIME_FOR_CONTINUATION_SECONDS,
 }
 
 // ─── Scheduling ──────────────────────────────────────────────────────

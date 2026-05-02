@@ -54,6 +54,14 @@ export const ProjectAutonomyConfigSchema = z.object({
   scheduledEnabled: z.boolean().default(false),
   // Phase 2: cost-throttling priority hint. See skip rule E.
   priority: ProjectPrioritySchema.default('normal'),
+  // Phase 4 / Sub 2: opt-in session continuation. When true, after a
+  // successful PR is opened (or auto-merged), the worker spawns another
+  // Claude turn on the updated state.md if budget remains. See ADR-024.
+  continueUntilBudget: z.boolean().default(false),
+  // Don't continue if remaining budget falls below this many seconds.
+  // 15 min default — short enough that a quick task still has room,
+  // long enough to avoid spawning a turn that would die mid-flight.
+  minTimeForContinuation: z.number().int().positive().default(900),
 })
 
 // ─── Project ─────────────────────────────────────────────────────────
@@ -212,6 +220,32 @@ export const BriefingSchema = z.object({
   sentAt: z.string().datetime(),
   content: z.string(),
   tgMessageId: z.string().nullable(),
+})
+
+// ─── Phase 4 / Sub 2: session turns ──────────────────────────────────
+
+export const SessionTurnStatusSchema = z.enum([
+  'completed',
+  'completed-no-changes',
+  'quality-gate-failed',
+  'timed-out',
+  'failed',
+  'cancelled',
+])
+
+export const SessionTurnSchema = z.object({
+  id: z.number().int().positive(),
+  sessionId: z.string().min(1),
+  turnNumber: z.number().int().positive(),
+  branchName: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  prUrl: z.string().url().nullable(),
+  status: SessionTurnStatusSchema,
+  costCents: z.number().int().nonnegative().nullable(),
+  startedAt: z.string().datetime(),
+  endedAt: z.string().datetime().nullable(),
+  terminationCause: TerminationCauseSchema.nullable(),
+  notes: z.string().nullable(),
 })
 
 // ─── Phase 4: PR feedback loop ───────────────────────────────────────

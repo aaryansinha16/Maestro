@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import simpleGit, { type SimpleGit } from 'simple-git'
 import {
+  CONTINUATION_TURN_OVERHEAD_SECONDS,
   COST_WARN_PER_SESSION_CENTS,
   FIXUP_TURN_BUDGET_SECONDS,
   LOGS_SUBDIR,
@@ -34,6 +35,7 @@ import {
   buildFixupTurnPrompt,
   buildSessionPrompt,
   isOrientationModeFromContext,
+  type ContinuationContext,
   type Project,
   type SessionStatus,
   type SessionResult,
@@ -49,6 +51,7 @@ import {
   ProjectRepository,
   QualityGateRepository,
   SessionRepository,
+  SessionTurnRepository,
 } from './repositories.js'
 import {
   defaultAllowlistFor,
@@ -122,6 +125,7 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionOutp
   const gates = new QualityGateRepository(input.db)
   const locks = new ProjectLockManager(input.db)
   const projects = new ProjectRepository(input.db)
+  const turns = new SessionTurnRepository(input.db)
 
   // Pre-flight ------------------------------------------------------------------------
   if (!input.dryRun && !input.skipClaudeProbe) {
@@ -139,15 +143,74 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionOutp
         promptVersion: PROMPT_VERSION,
       })
 
+  const sessionStartMs = Date.now()
   let result: RunSessionOutput | null = null
   try {
-    result = await runSessionInner({
-      ...input,
-      sessionId,
-      sessions,
-      gates,
-      projects,
-    })
+    // Turn 1 -----------------------------------------------------------------------
+    let turnNumber = 1
+    if (!input.dryRun) turns.insert({ sessionId, turnNumber })
+    result = await runSessionInner({ ...input, sessionId, sessions, gates, projects })
+    if (!input.dryRun) recordTurnFromResult(turns, sessionId, turnNumber, result)
+
+    // Phase 4 / Sub 2: continuation. Opt-in per autonomy.json. Each turn
+    // gets the remaining budget (minus the per-turn overhead) and opens its
+    // own PR. The loop exits as soon as state.md has no more concrete
+    // tasks, the budget falls below minTimeForContinuation, or the last
+    // turn failed / produced no PR.
+    const previousPrs: number[] = result.prNumber ? [result.prNumber] : []
+    while (
+      !input.dryRun &&
+      input.project.autonomyConfig.continueUntilBudget &&
+      shouldContinueAfterTurn(result, input.project, sessionStartMs)
+    ) {
+      const totalBudget = input.project.autonomyConfig.timeBudget
+      const elapsedSeconds = Math.floor((Date.now() - sessionStartMs) / 1000)
+      const remaining = totalBudget - elapsedSeconds
+      const nextTurnBudget = remaining - CONTINUATION_TURN_OVERHEAD_SECONDS
+      if (nextTurnBudget < input.project.autonomyConfig.minTimeForContinuation) {
+        logger.info(
+          {
+            sessionId,
+            elapsedSeconds,
+            remaining,
+            min: input.project.autonomyConfig.minTimeForContinuation,
+          },
+          'continuation: budget below min — stopping',
+        )
+        break
+      }
+      const workingRoot = workingDirFor(input.config.dataDir, input.project.slug)
+      try {
+        await softResetForNextTurn(
+          workingRoot,
+          input.project.autonomyConfig.branches.base,
+        )
+      } catch (err) {
+        logger.warn({ err, sessionId }, 'continuation: soft-reset failed; stopping')
+        break
+      }
+      // Re-read state.md after the reset; if no remaining tasks, stop.
+      const restoredState = await readMaestroDir(workingRoot)
+      const nextTask = deriveTaskFromState(restoredState.state.raw)
+      if (!nextTask || /^_\(/.test(nextTask)) {
+        logger.info({ sessionId }, 'continuation: state.md has no next task — stopping')
+        break
+      }
+      turnNumber += 1
+      turns.insert({ sessionId, turnNumber })
+      result = await runSessionInner({
+        ...input,
+        sessionId,
+        sessions,
+        gates,
+        projects,
+        continuation: { turnNumber, previousPrNumbers: previousPrs.slice() },
+        timeBudgetSecondsOverride: nextTurnBudget,
+      })
+      recordTurnFromResult(turns, sessionId, turnNumber, result)
+      if (result.prNumber) previousPrs.push(result.prNumber)
+    }
+
     return result
   } catch (err) {
     if (sessionRow) {
@@ -163,11 +226,79 @@ export async function runSession(input: RunSessionInput): Promise<RunSessionOutp
   }
 }
 
+/**
+ * Phase 4 / Sub 2: a turn produced something worth continuing from when:
+ *   - the run completed (status = 'completed'), AND
+ *   - the run actually opened a PR or made changes the agent acknowledged
+ *     in state.md (we use prNumber as the proxy for "the agent did real
+ *     work this turn"), AND
+ *   - we did not hit a quality-gate failure / time-out / failure path.
+ * 'completed-no-changes' explicitly STOPS continuation: the agent told us
+ * there is nothing to do.
+ */
+function shouldContinueAfterTurn(
+  result: RunSessionOutput,
+  _project: Project,
+  _sessionStartMs: number,
+): boolean {
+  if (result.status !== 'completed') return false
+  if (!result.prNumber) return false
+  return true
+}
+
+function recordTurnFromResult(
+  turns: SessionTurnRepository,
+  sessionId: string,
+  turnNumber: number,
+  result: RunSessionOutput,
+): void {
+  // Map RunSessionOutput.status (SessionStatus) onto the narrower turn
+  // status enum. Anything not in the enum collapses to 'failed'.
+  const allowed: ReadonlyArray<RunSessionOutput['status']> = [
+    'completed',
+    'completed-no-changes',
+    'quality-gate-failed',
+    'timed-out',
+    'failed',
+    'cancelled',
+  ]
+  const status = (allowed.includes(result.status) ? result.status : 'failed') as
+    | 'completed'
+    | 'completed-no-changes'
+    | 'quality-gate-failed'
+    | 'timed-out'
+    | 'failed'
+    | 'cancelled'
+  turns.update(sessionId, turnNumber, {
+    branchName: result.branchName,
+    prNumber: result.prNumber,
+    prUrl: result.notes && /https?:\/\//.test(result.notes) ? result.notes.split(' ')[0] ?? null : null,
+    status,
+    costCents: result.costCents,
+    endedAt: new Date().toISOString(),
+    notes: result.notes,
+  })
+}
+
 interface InnerInput extends RunSessionInput {
   sessionId: string
   sessions: SessionRepository
   gates: QualityGateRepository
   projects: ProjectRepository
+  /**
+   * Phase 4 / Sub 2: when set, this is a continuation turn (turn >= 2).
+   * The worker skips prepareWorkingDir (the caller has already done a
+   * soft reset that carries .maestro/ across turns) and the prompt
+   * grows a CONTINUATION preamble.
+   */
+  continuation?: ContinuationContext
+  /**
+   * Phase 4 / Sub 2: per-turn time budget override. When set, replaces
+   * `project.autonomyConfig.timeBudget` for the Claude invocation. Used
+   * by continuation turns so each subsequent turn gets only the
+   * remaining budget, not a fresh full ceiling.
+   */
+  timeBudgetSecondsOverride?: number
 }
 
 async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
@@ -176,13 +307,17 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
   const logPath = sessionLogPath(config.dataDir, input.sessionId)
 
   // Step 2: working directory ------------------------------------------------------
-  await prepareWorkingDir({
-    workingRoot,
-    repoUrl: project.repoUrl,
-    baseBranch: project.autonomyConfig.branches.base,
-    developerName: config.developerName,
-    developerEmail: config.developerEmail ?? `${config.developerGithubUsername}@users.noreply.github.com`,
-  })
+  // Continuation turns (Sub 2) skip the prepare; the caller has already
+  // done a soft reset that carries .maestro/ across the boundary.
+  if (!input.continuation) {
+    await prepareWorkingDir({
+      workingRoot,
+      repoUrl: project.repoUrl,
+      baseBranch: project.autonomyConfig.branches.base,
+      developerName: config.developerName,
+      developerEmail: config.developerEmail ?? `${config.developerGithubUsername}@users.noreply.github.com`,
+    })
+  }
 
   // Step 3: read .maestro/ ----------------------------------------------------------
   const maestro = await readMaestroDir(workingRoot)
@@ -215,10 +350,11 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
   // Step 4: build prompt ------------------------------------------------------------
   const task = deriveTaskFromState(maestro.state.raw)
   const neverTouch = parseNeverTouchSection(maestro.context)
+  const turnTimeBudget = input.timeBudgetSecondsOverride ?? project.autonomyConfig.timeBudget
   const promptCtx = {
     projectName: project.slug,
     projectSlug: project.slug,
-    timeBudgetSeconds: project.autonomyConfig.timeBudget,
+    timeBudgetSeconds: turnTimeBudget,
     developerName: config.developerName,
     context: maestro.context,
     state: maestro.state.raw,
@@ -234,6 +370,7 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
       body: f.commentBody,
       postedAt: f.postedAt,
     })),
+    ...(input.continuation ? { continuation: input.continuation } : {}),
   }
   const orientationMode = isOrientationModeFromContext(promptCtx)
   const prompt = buildSessionPrompt(promptCtx)
@@ -270,7 +407,7 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
   const runResult = await runClaudeSession({
     cwd: workingRoot,
     prompt,
-    timeBudgetSeconds: project.autonomyConfig.timeBudget,
+    timeBudgetSeconds: turnTimeBudget,
     logPath,
     claudeBin: input.claudeBin,
   })
@@ -692,6 +829,52 @@ function parseNeverTouchSection(contextMd: string): string[] {
     .filter((s): s is string => s !== null && s.length > 0 && !/^_.*_$/.test(s))
 }
 
+// ─── Phase 4 / Sub 2: soft reset between continuation turns ─────────
+
+/**
+ * Carry .maestro/ across a continuation boundary. Turn N produced commits
+ * on a feature branch (already pushed and PR-opened). Turn N+1 should
+ * start from a clean base branch but still see the agent's updated
+ * state.md / context.md / journal — otherwise the next turn would pick
+ * up the SAME task turn N just finished.
+ *
+ * Steps:
+ *   1. Capture .maestro/ from the current working tree (turn N's branch tip).
+ *   2. Switch to the base branch and reset to origin/<base>.
+ *   3. Replace .maestro/ in the working tree with the captured copy.
+ *   4. The next turn's agent will commit those .maestro/ updates as part
+ *      of its own branch.
+ *
+ * Throws if the working dir isn't a git repo or the base branch doesn't
+ * exist; the caller catches and stops continuation in that case.
+ */
+async function softResetForNextTurn(workingRoot: string, baseBranch: string): Promise<void> {
+  const { cp, mkdtemp } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join: joinPath } = await import('node:path')
+  const maestroPath = joinPath(workingRoot, '.maestro')
+  if (!existsSync(maestroPath)) return
+
+  const tmp = await mkdtemp(joinPath(tmpdir(), 'maestro-soft-reset-'))
+  const tmpMaestro = joinPath(tmp, '.maestro')
+  await cp(maestroPath, tmpMaestro, { recursive: true })
+
+  try {
+    const git = simpleGit(workingRoot)
+    await git.fetch(['origin', baseBranch])
+    await git.checkout(baseBranch)
+    await git.reset(['--hard', `origin/${baseBranch}`])
+    // Replace .maestro/ with the snapshot. Reset already removed any
+    // uncommitted changes; this writes the carried-over copy on top of
+    // whatever .maestro/ shipped on base.
+    await rm(maestroPath, { recursive: true, force: true })
+    await cp(tmpMaestro, maestroPath, { recursive: true })
+    logger.info({ workingRoot, baseBranch }, 'continuation: soft reset complete')
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
 // ─── PR feedback marking ─────────────────────────────────────────────
 
 interface MarkFeedbackFromJournalInput {
@@ -758,6 +941,7 @@ export {
   workingDirFor,
   deriveTaskFromState,
   parseNeverTouchSection,
+  softResetForNextTurn,
   CACHE_DIRS,
 }
 

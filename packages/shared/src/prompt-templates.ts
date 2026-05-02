@@ -60,6 +60,21 @@ export interface SessionPromptContext {
    * the agent can locate the change.
    */
   pendingPrFeedback?: ReadonlyArray<PendingPrFeedbackEntry>
+  /**
+   * Phase 4 / Sub 2: marks this prompt as a continuation turn. When set,
+   * the prompt grows a CONTINUATION preamble that tells the agent which
+   * turn this is, which PRs the previous turns produced, and that the
+   * state.md it sees has already been updated by an earlier turn.
+   */
+  continuation?: ContinuationContext
+}
+
+export interface ContinuationContext {
+  /** This is turn N (>=2) of the same Maestro session. */
+  turnNumber: number
+  /** PR numbers opened by previous turns. May be empty if those turns
+   *  ran but produced no PR (orientation, no-changes). */
+  previousPrNumbers: number[]
 }
 
 export interface PendingPrFeedbackEntry {
@@ -305,6 +320,26 @@ Start by acknowledging your task. Then proceed.
 
 function buildPreamble(ctx: SessionPromptContext): string {
   const parts: string[] = []
+
+  if (ctx.continuation) {
+    const c = ctx.continuation
+    const prList = c.previousPrNumbers.length > 0
+      ? c.previousPrNumbers.map((n) => `#${n}`).join(', ')
+      : '_(none — previous turns ran but produced no PRs)_'
+    parts.push(
+      [
+        '== CONTINUATION ==',
+        '',
+        `This is turn ${c.turnNumber} of the same Maestro session. Previous turns`,
+        `produced PRs: ${prList}. The state.md you see below has already been`,
+        'updated by an earlier turn — your task list reflects what is left to do.',
+        '',
+        'Pick the next concrete task and proceed normally. Open your own PR on',
+        'a fresh feature branch (the branch from the previous turn is already',
+        'pushed and visible to GitHub; do not commit to it).',
+      ].join('\n'),
+    )
+  }
 
   if (ctx.isOrientationOnly) {
     parts.push(
