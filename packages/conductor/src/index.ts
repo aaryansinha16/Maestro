@@ -21,10 +21,14 @@ async function main(): Promise<void> {
 
   const dbHandle = openDatabase({ dataDir: config.dataDir })
   const startedAt = Date.now()
-  const app = buildServer({ startedAt, version: PACKAGE_VERSION })
+  const app = buildServer({ startedAt, version: PACKAGE_VERSION, db: dbHandle.db })
 
-  // Phase-deferred subsystems. These are no-ops in Phase 0 — they exist so
-  // wiring is in place for Phase 2 (scheduling) and Phase 4 (briefings).
+  // Reclaim any stale per-project locks left behind by a previous crash.
+  const { ProjectLockManager } = await import('./locks.js')
+  const stale = new ProjectLockManager(dbHandle.db).releaseAllForCurrentProcess()
+  if (stale > 0) logger.warn({ stale }, 'reclaimed stale project locks')
+
+  // Phase-deferred subsystems (Phase 2 scheduling, Phase 4 briefings).
   startScheduler({ db: dbHandle.db, config })
   startBriefing({ db: dbHandle.db, config })
 

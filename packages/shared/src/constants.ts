@@ -73,3 +73,41 @@ export const JOURNAL_LOOKBACK_ENTRIES = 3
 export const DEFAULT_PORT = 3000
 
 export const DEFAULT_DATA_DIR = './data'
+
+// ─── Working directories ─────────────────────────────────────────────
+
+// Where per-project clones live, relative to MAESTRO_DATA_DIR.
+export const WORK_SUBDIR = 'work'
+
+// Where session log files live, relative to MAESTRO_DATA_DIR.
+export const LOGS_SUBDIR = 'logs/sessions'
+
+// ─── Quality gates ───────────────────────────────────────────────────
+
+// Per-gate timeout (seconds). Default 5 minutes.
+export const DEFAULT_QUALITY_GATE_TIMEOUT_SECONDS = 5 * 60
+
+// Number of trailing output lines stored in the database for each gate
+// run. The full output goes to the session log file.
+export const QUALITY_GATE_OUTPUT_TAIL_LINES = 200
+
+// ─── Project stacks ──────────────────────────────────────────────────
+
+// Stacks Maestro can detect from the project root. Used to decide which
+// commands to run for each quality gate when no explicit override exists.
+export const PROJECT_STACKS = [
+  'pnpm',
+  'npm',
+  'yarn',
+  'bun',
+  'python-poetry',
+  'python-pip',
+  'rust-cargo',
+  'go-mod',
+  'unknown',
+] as const
+
+// ─── Sessions ────────────────────────────────────────────────────────
+
+// Session log tail size returned to the dashboard. Bigger requests stream.
+export const SESSION_LOG_TAIL_LINES = 500
