@@ -16,6 +16,12 @@ import type {
   CostAggregationsResponseSchema,
   ListPullRequestsQuerySchema,
   ListPullRequestsResponseSchema,
+  ScheduleEntrySchema,
+  ListScheduleResponseSchema,
+  UpdateScheduleBodySchema,
+  PauseProjectBodySchema,
+  QueueResponseSchema,
+  ListSkipsResponseSchema,
 } from './routes.js'
 
 export type HealthResponse = z.infer<typeof HealthResponseSchema>
@@ -35,3 +41,11 @@ export type CostAggregationsResponse = z.infer<typeof CostAggregationsResponseSc
 
 export type ListPullRequestsQuery = z.infer<typeof ListPullRequestsQuerySchema>
 export type ListPullRequestsResponse = z.infer<typeof ListPullRequestsResponseSchema>
+
+// Phase 2.
+export type ScheduleEntry = z.infer<typeof ScheduleEntrySchema>
+export type ListScheduleResponse = z.infer<typeof ListScheduleResponseSchema>
+export type UpdateScheduleBody = z.infer<typeof UpdateScheduleBodySchema>
+export type PauseProjectBody = z.infer<typeof PauseProjectBodySchema>
+export type QueueResponse = z.infer<typeof QueueResponseSchema>
+export type ListSkipsResponse = z.infer<typeof ListSkipsResponseSchema>

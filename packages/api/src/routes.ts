@@ -13,6 +13,10 @@ import {
   SessionSchema,
   PullRequestSchema,
   QualityGateRunSchema,
+  JobSchema,
+  ScheduledRunSchema,
+  WeekdaySchema,
+  ProjectPrioritySchema,
 } from '@maestro/shared'
 
 // ─── Common ──────────────────────────────────────────────────────────
@@ -111,6 +115,48 @@ export const ListPullRequestsResponseSchema = z.object({
   pullRequests: z.array(PullRequestSchema),
 })
 
+// ─── Phase 2: scheduling + queue ─────────────────────────────────────
+
+// One row per registered project on the schedule page. The dashboard
+// renders these as a table with toggles for `scheduledEnabled`.
+export const ScheduleEntrySchema = z.object({
+  slug: z.string().min(1),
+  scheduledEnabled: z.boolean(),
+  schedule: z.string().min(1),
+  skipDays: z.array(WeekdaySchema),
+  maxSessionsPerDay: z.number().int().positive(),
+  priority: ProjectPrioritySchema,
+  autoPausedAt: z.string().datetime().nullable(),
+  autoPauseReason: z.string().nullable(),
+  /** Best-effort next-run time computed from the cron expression. */
+  nextRunAt: z.string().datetime().nullable(),
+})
+
+export const ListScheduleResponseSchema = z.object({
+  entries: z.array(ScheduleEntrySchema),
+})
+
+export const UpdateScheduleBodySchema = z.object({
+  schedule: z.string().min(1).optional(),
+  skipDays: z.array(WeekdaySchema).optional(),
+  maxSessionsPerDay: z.number().int().positive().max(50).optional(),
+  priority: ProjectPrioritySchema.optional(),
+})
+
+export const PauseProjectBodySchema = z.object({
+  reason: z.string().min(1).max(500).optional(),
+})
+
+export const QueueResponseSchema = z.object({
+  running: z.array(JobSchema),
+  queued: z.array(JobSchema),
+  recentlyCompleted: z.array(JobSchema),
+})
+
+export const ListSkipsResponseSchema = z.object({
+  skips: z.array(ScheduledRunSchema),
+})
+
 // ─── Route registry ──────────────────────────────────────────────────
 
 // A typed catalogue of every route, useful to the dashboard's fetch wrapper
@@ -127,6 +173,16 @@ export const ROUTES = {
   getSessionDiff: { method: 'GET', path: '/api/sessions/:id/diff' },
   listPullRequests: { method: 'GET', path: '/api/prs' },
   getCosts: { method: 'GET', path: '/api/costs' },
+  // Phase 2.
+  listSchedule: { method: 'GET', path: '/api/schedule' },
+  updateSchedule: { method: 'POST', path: '/api/projects/:slug/schedule' },
+  enableScheduling: { method: 'POST', path: '/api/projects/:slug/scheduling/enable' },
+  disableScheduling: { method: 'POST', path: '/api/projects/:slug/scheduling/disable' },
+  pauseProject: { method: 'POST', path: '/api/projects/:slug/pause' },
+  resumeProject: { method: 'POST', path: '/api/projects/:slug/resume' },
+  getQueue: { method: 'GET', path: '/api/queue' },
+  listSkips: { method: 'GET', path: '/api/projects/:slug/skips' },
+  triggerProject: { method: 'POST', path: '/api/projects/:slug/trigger' },
 } as const
 
 export type RouteKey = keyof typeof ROUTES
