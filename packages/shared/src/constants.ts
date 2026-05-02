@@ -48,6 +48,10 @@ export const DEFAULT_AUTONOMY_CONFIG: ProjectAutonomyConfig = {
   },
   skipDays: [],
   maxSessionsPerDay: 6,
+  // Phase 2: scheduling is opt-in. Defaults to false; the developer
+  // enables per project after manual sessions prove the project is healthy.
+  scheduledEnabled: false,
+  priority: 'normal',
 }
 
 // ─── Scheduling ──────────────────────────────────────────────────────
@@ -129,3 +133,44 @@ export const DEFAULT_MONTHLY_BUDGET_USD = 50
 // Threshold (fraction of monthly budget) at which the dashboard surfaces a
 // "approaching budget" alert.
 export const COST_WARN_BUDGET_FRACTION = 0.8
+
+// ─── Phase 2: scheduling ─────────────────────────────────────────────
+
+// Default global parallel-session ceiling. Overridable via
+// MAESTRO_MAX_PARALLEL env var. Per-project concurrency is always 1
+// (ADR-008) and enforced separately by the project_locks table.
+export const DEFAULT_MAX_PARALLEL = 2
+
+// How often the scheduler polls the projects table for hot-reload.
+// 30 s is a pragmatic compromise — fast enough that schedule edits
+// take effect mid-day without a restart, slow enough to be cheap.
+export const SCHEDULER_POLL_INTERVAL_MS = 30_000
+
+// Default window the "developer recently active" skip rule looks at.
+// Overridable via MAESTRO_DEVELOPER_ACTIVITY_WINDOW_HOURS.
+export const DEFAULT_DEVELOPER_ACTIVITY_WINDOW_HOURS = 4
+
+// Cost throttle thresholds (fraction of monthly budget). Above LOW,
+// `priority: low` projects are skipped. Above ALL, every scheduled run
+// is skipped (manual triggers still work).
+export const COST_THROTTLE_LOW_FRACTION = 0.8
+export const COST_THROTTLE_ALL_FRACTION = 0.95
+
+// Failed-session backoff: a project's nth scheduled run is skipped when
+// the consecutive_failures counter reaches FAILURE_BACKOFF_THRESHOLD.
+// We skip (count - threshold + 1) runs then try again.
+export const FAILURE_BACKOFF_THRESHOLD = 3
+
+// Auto-pause kicks in at this many consecutive failures. Distinct from
+// the backoff threshold so the developer has a clear "stop scheduling"
+// signal, with manual triggers still available.
+export const AUTO_PAUSE_FAILURE_THRESHOLD = 5
+
+// Manual triggers always have higher priority than scheduled ones.
+// Higher number = jumps queue earlier.
+export const JOB_PRIORITY_SCHEDULED = 0
+export const JOB_PRIORITY_MANUAL = 100
+export const JOB_PRIORITY_RETRY = 50
+
+// Default polling interval for the dashboard /queue page.
+export const QUEUE_POLL_INTERVAL_MS = 5_000

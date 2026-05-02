@@ -8,6 +8,8 @@ import {
   ProjectSchema,
   SessionSchema,
   QualityGateRunSchema,
+  JobSchema,
+  ScheduledRunSchema,
   type Project,
   type ProjectAutonomyConfig,
   type Session,
@@ -16,6 +18,12 @@ import {
   type QualityGateRun,
   type QualityGate,
   type QualityGateStatus,
+  type Job,
+  type JobSource,
+  type JobStatus,
+  type ScheduledRun,
+  type ScheduledRunAction,
+  type ScheduleSkipReason,
   MaestroError,
 } from '@maestro/shared'
 
@@ -27,6 +35,10 @@ interface ProjectRow {
   repo_url: string
   autonomy_config_json: string
   created_at: string
+  // Phase 2 — added by migration 003.
+  scheduled_enabled: number
+  auto_paused_at: string | null
+  auto_pause_reason: string | null
 }
 
 export interface CreateProjectInput {
@@ -40,12 +52,23 @@ export class ProjectRepository {
   constructor(private readonly db: Database.Database) {}
 
   insert(input: CreateProjectInput): Project {
+    // The autonomy.json controls scheduledEnabled at the file level; the
+    // row column mirrors it. Phase 2 ships every existing/new project at
+    // scheduledEnabled=false (umbrella #17 hard requirement) so the
+    // developer enables scheduling explicitly per project.
+    const scheduledEnabled = input.autonomyConfig.scheduledEnabled ? 1 : 0
     const stmt = this.db.prepare(`
-      INSERT INTO projects (id, slug, repo_url, autonomy_config_json)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO projects (id, slug, repo_url, autonomy_config_json, scheduled_enabled)
+      VALUES (?, ?, ?, ?, ?)
     `)
     try {
-      stmt.run(input.id, input.slug, input.repoUrl, JSON.stringify(input.autonomyConfig))
+      stmt.run(
+        input.id,
+        input.slug,
+        input.repoUrl,
+        JSON.stringify(input.autonomyConfig),
+        scheduledEnabled,
+      )
     } catch (err) {
       throw new MaestroError('CONFIG_VALIDATION_FAILED', {
         message: `Failed to insert project ${input.slug}`,
@@ -79,6 +102,54 @@ export class ProjectRepository {
     return rows.map(rowToProject)
   }
 
+  /**
+   * Phase 2: list only projects with scheduling enabled and not in an
+   * auto-pause state. The scheduler reads this every poll cycle.
+   */
+  listSchedulable(): Project[] {
+    const rows = this.db
+      .prepare<[], ProjectRow>(
+        `SELECT * FROM projects WHERE scheduled_enabled = 1 AND auto_paused_at IS NULL`,
+      )
+      .all()
+    return rows.map(rowToProject)
+  }
+
+  setScheduledEnabled(slug: string, enabled: boolean): void {
+    this.db
+      .prepare('UPDATE projects SET scheduled_enabled = ? WHERE slug = ?')
+      .run(enabled ? 1 : 0, slug)
+  }
+
+  /**
+   * Persist a config edit (e.g. schedule string change, priority bump).
+   * Mirrors the autonomy.json file but only at the row level — the file
+   * itself lives in the managed repo and is the source of truth (ADR-004).
+   */
+  updateAutonomyConfig(slug: string, config: ProjectAutonomyConfig): void {
+    this.db
+      .prepare(
+        'UPDATE projects SET autonomy_config_json = ?, scheduled_enabled = ? WHERE slug = ?',
+      )
+      .run(JSON.stringify(config), config.scheduledEnabled ? 1 : 0, slug)
+  }
+
+  setAutoPause(slug: string, reason: string): void {
+    this.db
+      .prepare(
+        'UPDATE projects SET auto_paused_at = strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\'), auto_pause_reason = ? WHERE slug = ?',
+      )
+      .run(reason, slug)
+  }
+
+  clearAutoPause(slug: string): void {
+    this.db
+      .prepare(
+        'UPDATE projects SET auto_paused_at = NULL, auto_pause_reason = NULL WHERE slug = ?',
+      )
+      .run(slug)
+  }
+
   delete(slug: string): void {
     this.db.prepare('DELETE FROM projects WHERE slug = ?').run(slug)
   }
@@ -91,6 +162,9 @@ function rowToProject(row: ProjectRow): Project {
     repoUrl: row.repo_url,
     autonomyConfig: JSON.parse(row.autonomy_config_json) as unknown,
     createdAt: row.created_at,
+    scheduledEnabled: row.scheduled_enabled === 1,
+    autoPausedAt: row.auto_paused_at,
+    autoPauseReason: row.auto_pause_reason,
   })
 }
 
@@ -414,4 +488,279 @@ export class QualityGateRepository {
       }),
     )
   }
+}
+
+// ─── Phase 2: job queue ──────────────────────────────────────────────
+
+interface JobRow {
+  id: string
+  project_id: string
+  source: JobSource
+  priority: number
+  status: JobStatus
+  enqueued_at: string
+  started_at: string | null
+  ended_at: string | null
+  session_id: string | null
+  cancel_reason: string | null
+}
+
+export interface CreateJobInput {
+  id: string
+  projectId: string
+  source: JobSource
+  priority: number
+}
+
+export interface UpdateJobInput {
+  status?: JobStatus
+  startedAt?: string | null
+  endedAt?: string | null
+  sessionId?: string | null
+  cancelReason?: string | null
+}
+
+export class JobQueueRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  insert(input: CreateJobInput): Job {
+    this.db
+      .prepare(
+        `INSERT INTO job_queue (id, project_id, source, priority, status)
+         VALUES (?, ?, ?, ?, 'queued')`,
+      )
+      .run(input.id, input.projectId, input.source, input.priority)
+    const row = this.findById(input.id)
+    if (!row) throw new MaestroError('INTERNAL_ERROR', { message: 'job insert lost' })
+    return row
+  }
+
+  findById(id: string): Job | null {
+    const row = this.db
+      .prepare<[string], JobRow>('SELECT * FROM job_queue WHERE id = ?')
+      .get(id)
+    return row ? rowToJob(row) : null
+  }
+
+  /**
+   * Job-queue ordering: status='queued' first, then by priority DESC,
+   * then by enqueued_at ASC (FIFO within priority class). The scheduler
+   * iterates this and picks the next eligible job.
+   */
+  listQueued(): Job[] {
+    const rows = this.db
+      .prepare<[], JobRow>(
+        `SELECT * FROM job_queue WHERE status = 'queued'
+         ORDER BY priority DESC, enqueued_at ASC`,
+      )
+      .all()
+    return rows.map(rowToJob)
+  }
+
+  listRunning(): Job[] {
+    const rows = this.db
+      .prepare<[], JobRow>(`SELECT * FROM job_queue WHERE status = 'running'`)
+      .all()
+    return rows.map(rowToJob)
+  }
+
+  /** Sessions completed in the last `since` ms — used by the dashboard. */
+  listRecent(since: Date): Job[] {
+    const rows = this.db
+      .prepare<[string], JobRow>(
+        `SELECT * FROM job_queue
+         WHERE ended_at IS NOT NULL AND ended_at >= ?
+         ORDER BY ended_at DESC`,
+      )
+      .all(since.toISOString())
+    return rows.map(rowToJob)
+  }
+
+  countQueuedForProject(projectId: string): number {
+    return (
+      this.db
+        .prepare<[string], { c: number }>(
+          `SELECT COUNT(*) AS c FROM job_queue WHERE project_id = ? AND status = 'queued'`,
+        )
+        .get(projectId) as { c: number }
+    ).c
+  }
+
+  hasRunningForProject(projectId: string): boolean {
+    return (
+      (
+        this.db
+          .prepare<[string], { c: number }>(
+            `SELECT COUNT(*) AS c FROM job_queue WHERE project_id = ? AND status = 'running'`,
+          )
+          .get(projectId) as { c: number }
+      ).c > 0
+    )
+  }
+
+  update(id: string, patch: UpdateJobInput): Job {
+    const setParts: string[] = []
+    const values: Array<string | null> = []
+    const map: Record<string, keyof UpdateJobInput> = {
+      status: 'status',
+      started_at: 'startedAt',
+      ended_at: 'endedAt',
+      session_id: 'sessionId',
+      cancel_reason: 'cancelReason',
+    }
+    for (const column of Object.keys(map)) {
+      const key = map[column]
+      if (key === undefined) continue
+      const value = patch[key]
+      if (value === undefined) continue
+      setParts.push(`${column} = ?`)
+      values.push(value)
+    }
+    if (setParts.length === 0) {
+      const existing = this.findById(id)
+      if (!existing) throw new MaestroError('INTERNAL_ERROR', { message: `job ${id} missing` })
+      return existing
+    }
+    values.push(id)
+    this.db.prepare(`UPDATE job_queue SET ${setParts.join(', ')} WHERE id = ?`).run(...values)
+    const row = this.findById(id)
+    if (!row) throw new MaestroError('INTERNAL_ERROR', { message: `job ${id} missing after update` })
+    return row
+  }
+
+  /**
+   * Crash recovery: any rows still in 'running' from a previous boot are
+   * orphaned. Mark them cancelled with reason 'conductor-restart' so a
+   * fresh boot doesn't think those slots are still occupied.
+   * Returns the number of jobs reclaimed.
+   */
+  cancelStaleOnBoot(): number {
+    const result = this.db
+      .prepare(
+        `UPDATE job_queue
+           SET status = 'cancelled',
+               ended_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+               cancel_reason = 'conductor-restart'
+         WHERE status = 'running'`,
+      )
+      .run()
+    return result.changes
+  }
+}
+
+function rowToJob(row: JobRow): Job {
+  return JobSchema.parse({
+    id: row.id,
+    projectId: row.project_id,
+    source: row.source,
+    status: row.status,
+    priority: row.priority,
+    enqueuedAt: row.enqueued_at,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    sessionId: row.session_id,
+    cancelReason: row.cancel_reason,
+  })
+}
+
+// ─── Phase 2: scheduled-runs audit log ───────────────────────────────
+
+interface ScheduledRunRow {
+  id: number
+  project_id: string
+  scheduled_at: string
+  fired_at: string
+  action: ScheduledRunAction
+  skip_reason: ScheduleSkipReason | null
+  job_id: string | null
+  notes: string | null
+}
+
+export interface RecordScheduledRunInput {
+  projectId: string
+  scheduledAt: string
+  action: ScheduledRunAction
+  skipReason?: ScheduleSkipReason | null
+  jobId?: string | null
+  notes?: string | null
+}
+
+export class ScheduledRunsRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  insert(input: RecordScheduledRunInput): ScheduledRun {
+    this.db
+      .prepare(
+        `INSERT INTO scheduled_runs (project_id, scheduled_at, action, skip_reason, job_id, notes)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.projectId,
+        input.scheduledAt,
+        input.action,
+        input.skipReason ?? null,
+        input.jobId ?? null,
+        input.notes ?? null,
+      )
+    const row = this.db
+      .prepare<[], ScheduledRunRow>('SELECT * FROM scheduled_runs ORDER BY id DESC LIMIT 1')
+      .get()
+    if (!row) throw new MaestroError('INTERNAL_ERROR', { message: 'scheduled_runs insert lost' })
+    return rowToScheduledRun(row)
+  }
+
+  recentForProject(projectId: string, limit = 20): ScheduledRun[] {
+    const rows = this.db
+      .prepare<[string, number], ScheduledRunRow>(
+        `SELECT * FROM scheduled_runs WHERE project_id = ?
+         ORDER BY fired_at DESC LIMIT ?`,
+      )
+      .all(projectId, limit)
+    return rows.map(rowToScheduledRun)
+  }
+
+  /**
+   * Counts of {scheduled, ran, skipped} from today (UTC) — feeds the
+   * dashboard Overview stats card.
+   */
+  todaySummary(): { scheduled: number; enqueued: number; skipped: number } {
+    const todayStart = new Date()
+    todayStart.setUTCHours(0, 0, 0, 0)
+    const since = todayStart.toISOString()
+    const total = (
+      this.db
+        .prepare<[string], { c: number }>(
+          `SELECT COUNT(*) AS c FROM scheduled_runs WHERE fired_at >= ?`,
+        )
+        .get(since) as { c: number }
+    ).c
+    const enqueued = (
+      this.db
+        .prepare<[string], { c: number }>(
+          `SELECT COUNT(*) AS c FROM scheduled_runs WHERE fired_at >= ? AND action = 'enqueued'`,
+        )
+        .get(since) as { c: number }
+    ).c
+    const skipped = (
+      this.db
+        .prepare<[string], { c: number }>(
+          `SELECT COUNT(*) AS c FROM scheduled_runs WHERE fired_at >= ? AND action = 'skipped'`,
+        )
+        .get(since) as { c: number }
+    ).c
+    return { scheduled: total, enqueued, skipped }
+  }
+}
+
+function rowToScheduledRun(row: ScheduledRunRow): ScheduledRun {
+  return ScheduledRunSchema.parse({
+    id: row.id,
+    projectId: row.project_id,
+    scheduledAt: row.scheduled_at,
+    firedAt: row.fired_at,
+    action: row.action,
+    skipReason: row.skip_reason,
+    jobId: row.job_id,
+    notes: row.notes,
+  })
 }
