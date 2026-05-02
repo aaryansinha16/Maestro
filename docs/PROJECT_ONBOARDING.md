@@ -40,7 +40,9 @@ The autonomy levels are described in `CLAUDE.md`:
 
 - `pr-only` — agent opens regular PRs, you merge. Default for most projects.
 - `draft-only` — agent opens draft PRs that explicitly need review.
-- `full` — agent commits directly to main. Reserved for low-risk projects.
+- `full` — agent opens a PR and auto-merges it (squash) once gates pass.
+  Reserved for low-risk projects. If branch protection blocks the merge, the
+  PR is left open and the session notes record the reason.
 - `paused` — Maestro doesn't touch this project until unpaused.
 
 ## 2. Edit `context.md` to taste

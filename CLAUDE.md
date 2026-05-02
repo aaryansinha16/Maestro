@@ -275,7 +275,7 @@ Stable project context. Architecture, conventions, key files, gotchas. The agent
 
 ### Autonomy levels
 
-- **`full`** — agent can commit directly to main. Reserved for low-risk projects (small experiments, dotfiles, etc.). Rare.
+- **`full`** — agent opens a PR and auto-merges it (squash) once gates pass. If branch protection blocks the merge the PR is left open with a note in the session results. Reserved for low-risk projects (small experiments, dotfiles, etc.). Rare.
 - **`pr-only`** — agent opens regular PRs, developer merges. Default for most projects.
 - **`draft-only`** — agent opens draft PRs that explicitly need review. For high-risk projects (anything financial, anything in production).
 - **`paused`** — Maestro doesn't touch this project until unpaused.
@@ -323,7 +323,7 @@ The system prompt should explicitly tell the agent:
 ## What NOT to Do
 
 - NEVER store API keys or secrets in `.maestro/` files (those are in repos)
-- NEVER push to main directly except in `full` autonomy mode
+- NEVER push to main directly — even in `full` autonomy mode the agent opens a PR and auto-merges it (squash) so there is always a PR record
 - NEVER open more than 1 PR per project per session
 - NEVER use `--no-verify` or skip quality gates
 - NEVER make commits without the developer's git identity configured

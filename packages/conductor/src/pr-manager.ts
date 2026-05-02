@@ -19,6 +19,7 @@ import { logger } from './logger.js'
 
 export interface GitHubClient {
   createPullRequest(input: CreatePullRequestInput): Promise<PullRequest>
+  mergePullRequest(input: MergePullRequestInput): Promise<MergePullRequestResult>
   addLabels(input: AddLabelsInput): Promise<void>
   listOpenPullRequests(repo: RepoCoords): Promise<PullRequest[]>
   verifyScopes(): Promise<void>
@@ -44,6 +45,19 @@ export interface AddLabelsInput {
   prNumber: number
   labels: string[]
 }
+
+export interface MergePullRequestInput {
+  repo: RepoCoords
+  prNumber: number
+  /** Defaults to 'squash' — the agent's WIP commits collapse to one PR commit. */
+  method?: 'merge' | 'squash' | 'rebase'
+  commitTitle?: string
+  commitMessage?: string
+}
+
+export type MergePullRequestResult =
+  | { status: 'merged'; sha: string }
+  | { status: 'blocked'; reason: string }
 
 // ─── Construction ────────────────────────────────────────────────────
 
@@ -104,6 +118,33 @@ export function createGitHubClient(input: CreateGitHubClientInput): GitHubClient
           labels: req.labels,
         })
       }, 'addLabels')
+    },
+
+    async mergePullRequest(req) {
+      // Branch protection / unmergeable states return 405/409 from
+      // GitHub. Surface those as a structured `blocked` outcome rather
+      // than throwing, so a `level: full` session leaves the PR open
+      // for the developer to merge manually instead of failing the
+      // whole run.
+      try {
+        const { data } = await octokit.pulls.merge({
+          owner: req.repo.owner,
+          repo: req.repo.repo,
+          pull_number: req.prNumber,
+          merge_method: req.method ?? 'squash',
+          commit_title: req.commitTitle,
+          commit_message: req.commitMessage,
+        })
+        return { status: 'merged', sha: data.sha }
+      } catch (err) {
+        const status = (err as { status?: number }).status
+        if (status === 405 || status === 409 || status === 422) {
+          const message = err instanceof Error ? err.message : String(err)
+          logger.warn({ prNumber: req.prNumber, status, message }, 'auto-merge blocked')
+          return { status: 'blocked', reason: message }
+        }
+        throw err
+      }
     },
 
     async listOpenPullRequests(repo) {

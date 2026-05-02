@@ -442,6 +442,33 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
     labels: project.autonomyConfig.github.prLabels,
   })
 
+  if (project.autonomyConfig.level === 'full') {
+    const merge = await githubClient.mergePullRequest({
+      repo,
+      prNumber: pr.number,
+      method: 'squash',
+      commitTitle: title,
+    })
+    if (merge.status === 'merged') {
+      logger.info(
+        { prNumber: pr.number, sha: merge.sha, slug: project.slug },
+        'auto-merged PR (level=full)',
+      )
+      return baseFinalize('completed', {
+        prNumber: pr.number,
+        notes: `${pr.url} (auto-merged ${merge.sha.slice(0, 7)})`,
+      })
+    }
+    logger.warn(
+      { prNumber: pr.number, slug: project.slug, reason: merge.reason },
+      'auto-merge blocked; PR left open',
+    )
+    return baseFinalize('completed', {
+      prNumber: pr.number,
+      notes: `${pr.url} (auto-merge blocked: ${merge.reason})`,
+    })
+  }
+
   return baseFinalize('completed', {
     prNumber: pr.number,
     notes: pr.url,
