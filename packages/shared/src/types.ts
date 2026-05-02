@@ -15,6 +15,14 @@ import type {
   CostRecordSchema,
   BriefingSchema,
   TerminationCauseSchema,
+  ProjectPrioritySchema,
+  WeekdaySchema,
+  JobSchema,
+  JobSourceSchema,
+  JobStatusSchema,
+  ScheduledRunSchema,
+  ScheduledRunActionSchema,
+  ScheduleSkipReasonSchema,
 } from './schemas.js'
 import type { z } from 'zod'
 import type { PROJECT_STACKS } from './constants.js'
@@ -92,3 +100,26 @@ export interface QualityGateCommand {
   /** Where to run the command, relative to project root. */
   cwd?: string
 }
+
+// ─── Phase 2: scheduling + queue ─────────────────────────────────────
+
+export type ProjectPriority = z.infer<typeof ProjectPrioritySchema>
+
+export const WEEKDAYS = [
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+] as const
+export type Weekday = z.infer<typeof WeekdaySchema>
+
+export type JobSource = z.infer<typeof JobSourceSchema>
+export type JobStatus = z.infer<typeof JobStatusSchema>
+export type Job = z.infer<typeof JobSchema>
+
+export type ScheduledRunAction = z.infer<typeof ScheduledRunActionSchema>
+export type ScheduleSkipReason = z.infer<typeof ScheduleSkipReasonSchema>
+export type ScheduledRun = z.infer<typeof ScheduledRunSchema>
