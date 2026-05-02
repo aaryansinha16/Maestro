@@ -18,6 +18,15 @@ import { runAdd } from './cli/add.js'
 import { runRun, runInspect } from './cli/run.js'
 import { runDoctor } from './cli/doctor.js'
 import { runReset, runGc } from './cli/maintenance.js'
+import {
+  runPause,
+  runQueue,
+  runResume,
+  runScheduleDisable,
+  runScheduleEnable,
+  runScheduleList,
+  runSkips,
+} from './cli/scheduling.js'
 import { failWith, loadEnvFromRepoRoot } from './cli/util.js'
 
 loadEnvFromRepoRoot()
@@ -169,6 +178,53 @@ cli
     console.log(`version    ${health.version}`)
     console.log(`uptime     ${health.uptimeSeconds}s`)
     console.log(`timestamp  ${health.timestamp}`)
+  })
+
+// ─── Phase 2: scheduling commands ───────────────────────────────────
+
+cli
+  .command('schedule enable <slug>', 'Enable scheduled execution for a project')
+  .action(async (slug: string) => {
+    await runScheduleEnable(slug)
+  })
+
+cli
+  .command('schedule disable <slug>', 'Disable scheduled execution for a project')
+  .action(async (slug: string) => {
+    await runScheduleDisable(slug)
+  })
+
+cli
+  .command('schedule list', 'Show every project with its scheduling state and next run')
+  .action(async () => {
+    await runScheduleList()
+  })
+
+cli
+  .command('pause <slug>', 'Pause a project (skips both scheduled and auto runs)')
+  .option('--reason <text>', 'Optional human note recorded with the pause')
+  .action(async (slug: string, opts: { reason?: string }) => {
+    await runPause(slug, opts.reason)
+  })
+
+cli
+  .command('resume <slug>', 'Clear an auto-pause or manual pause on a project')
+  .action(async (slug: string) => {
+    await runResume(slug)
+  })
+
+cli
+  .command('queue', 'Show running, queued, and recently completed jobs')
+  .action(async () => {
+    await runQueue()
+  })
+
+cli
+  .command('skips <slug>', 'Show recent scheduled-runs entries (skips + enqueues) for a project')
+  .option('--limit <n>', 'Number of rows to show', { default: 20 })
+  .action(async (slug: string, opts: { limit?: number | string }) => {
+    const n = Number(opts.limit ?? 20)
+    await runSkips(slug, Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 20)
   })
 
 cli.help()

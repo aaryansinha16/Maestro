@@ -5,7 +5,7 @@
 // session-detail and session-log routes power the dashboard's "what
 // happened" view.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import { logger as honoLogger } from 'hono/logger'
 import { HTTPException } from 'hono/http-exception'
@@ -16,11 +16,18 @@ import {
   CostAggregationsResponseSchema,
   HealthResponseSchema,
   ListProjectsResponseSchema,
+  ListScheduleResponseSchema,
   ListSessionsResponseSchema,
+  ListSkipsResponseSchema,
+  PauseProjectBodySchema,
+  QueueResponseSchema,
+  UpdateScheduleBodySchema,
 } from '@maestro/api'
 import {
+  AutonomyFileSchema,
   COST_WARN_BUDGET_FRACTION,
   DEFAULT_MONTHLY_BUDGET_USD,
+  JOB_PRIORITY_MANUAL,
   SESSION_LOG_TAIL_LINES,
   buildSessionPrompt,
   isMaestroError,
@@ -30,10 +37,14 @@ import { execa } from 'execa'
 import { logger } from './logger.js'
 import { listRecentJournal, readMaestroDir } from './state-manager.js'
 import { workingDirFor, parseNeverTouchSection } from './worker.js'
+import { computeNextCronRun } from './cron-utils.js'
+import type { JobQueue } from './job-queue.js'
+import type { Scheduler } from './scheduler.js'
 import {
   CostRepository,
   ProjectRepository,
   QualityGateRepository,
+  ScheduledRunsRepository,
   SessionRepository,
 } from './repositories.js'
 
@@ -48,6 +59,15 @@ export interface ServerDeps {
   dataDir: string
   /** Surfaced as the developer name in reconstructed prompts. */
   developerName: string
+  /**
+   * Optional Phase 2 plumbing: when present, the schedule + queue + skips
+   * endpoints come alive. Tests omit these and the endpoints fall back to
+   * read-only DB lookups.
+   */
+  queue?: JobQueue
+  scheduler?: Scheduler
+  /** Optional cron timezone for next-run computation. Defaults to UTC. */
+  schedulerTimezone?: string
 }
 
 export function buildServer(deps: ServerDeps): Hono {
@@ -56,6 +76,7 @@ export function buildServer(deps: ServerDeps): Hono {
   const sessions = new SessionRepository(deps.db)
   const gates = new QualityGateRepository(deps.db)
   const costs = new CostRepository(deps.db)
+  const scheduledRuns = new ScheduledRunsRepository(deps.db)
 
   app.use('*', honoLogger((msg) => logger.debug(msg)))
   app.use('/api/*', cors({ origin: '*' }))
@@ -263,11 +284,134 @@ export function buildServer(deps: ServerDeps): Hono {
     return c.json({ pullRequests: pulls })
   })
 
+  // ─── Phase 2: scheduling + queue ──────────────────────────────────
+
+  app.get('/api/schedule', (c) => {
+    const tz = deps.schedulerTimezone ?? 'UTC'
+    const entries = projects.list().map((p) => ({
+      slug: p.slug,
+      scheduledEnabled: p.scheduledEnabled,
+      schedule: p.autonomyConfig.schedule,
+      skipDays: p.autonomyConfig.skipDays,
+      maxSessionsPerDay: p.autonomyConfig.maxSessionsPerDay,
+      priority: p.autonomyConfig.priority,
+      autoPausedAt: p.autoPausedAt,
+      autoPauseReason: p.autoPauseReason,
+      nextRunAt: p.scheduledEnabled
+        ? computeNextCronRun(p.autonomyConfig.schedule, tz)
+        : null,
+    }))
+    const body = ListScheduleResponseSchema.parse({ entries })
+    return c.json(body)
+  })
+
+  app.post('/api/projects/:slug/scheduling/enable', (c) => {
+    const slug = c.req.param('slug')
+    const project = projects.findBySlug(slug)
+    if (!project) return notFoundProject(c, slug)
+    const next = AutonomyFileSchema.parse({
+      ...project.autonomyConfig,
+      scheduledEnabled: true,
+    })
+    projects.updateAutonomyConfig(slug, next)
+    deps.scheduler?.reconcileNow()
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/projects/:slug/scheduling/disable', (c) => {
+    const slug = c.req.param('slug')
+    const project = projects.findBySlug(slug)
+    if (!project) return notFoundProject(c, slug)
+    const next = AutonomyFileSchema.parse({
+      ...project.autonomyConfig,
+      scheduledEnabled: false,
+    })
+    projects.updateAutonomyConfig(slug, next)
+    deps.scheduler?.reconcileNow()
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/projects/:slug/schedule', async (c) => {
+    const slug = c.req.param('slug')
+    const project = projects.findBySlug(slug)
+    if (!project) return notFoundProject(c, slug)
+    const raw = (await c.req.json().catch(() => ({}))) as unknown
+    const body = UpdateScheduleBodySchema.parse(raw)
+    const merged = AutonomyFileSchema.parse({
+      ...project.autonomyConfig,
+      ...body,
+    })
+    projects.updateAutonomyConfig(slug, merged)
+    deps.scheduler?.reconcileNow()
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/projects/:slug/pause', async (c) => {
+    const slug = c.req.param('slug')
+    const project = projects.findBySlug(slug)
+    if (!project) return notFoundProject(c, slug)
+    const raw = (await c.req.json().catch(() => ({}))) as unknown
+    const body = PauseProjectBodySchema.parse(raw)
+    projects.setAutoPause(slug, body.reason ?? 'manual pause')
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/projects/:slug/resume', (c) => {
+    const slug = c.req.param('slug')
+    if (!projects.findBySlug(slug)) return notFoundProject(c, slug)
+    projects.clearAutoPause(slug)
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/projects/:slug/trigger', (c) => {
+    const slug = c.req.param('slug')
+    const project = projects.findBySlug(slug)
+    if (!project) return notFoundProject(c, slug)
+    if (!deps.queue) {
+      return c.json(
+        { error: { code: 'QUEUE_UNAVAILABLE', message: 'queue not wired into server' } },
+        503,
+      )
+    }
+    const job = deps.queue.enqueue({
+      projectId: project.id,
+      source: 'manual',
+      priority: JOB_PRIORITY_MANUAL,
+    })
+    return c.json({ ok: true, jobId: job.id })
+  })
+
+  app.get('/api/queue', (c) => {
+    if (!deps.queue) {
+      return c.json(QueueResponseSchema.parse({ running: [], queued: [], recentlyCompleted: [] }))
+    }
+    const snap = deps.queue.snapshot()
+    const body = QueueResponseSchema.parse(snap)
+    return c.json(body)
+  })
+
+  app.get('/api/projects/:slug/skips', (c) => {
+    const slug = c.req.param('slug')
+    const project = projects.findBySlug(slug)
+    if (!project) return notFoundProject(c, slug)
+    const limit = parseInt(c.req.query('limit') ?? '20', 10)
+    const skips = scheduledRuns.recentForProject(project.id, Number.isFinite(limit) ? limit : 20)
+    const body = ListSkipsResponseSchema.parse({ skips })
+    return c.json(body)
+  })
+
   app.notFound((c) =>
     c.json({ error: { code: 'NOT_FOUND', message: `No route for ${c.req.path}` } }, 404),
   )
 
   return app
+}
+
+function notFoundProject(c: Context, slug: string): Response {
+  return c.json(
+    { error: { code: 'PROJECT_NOT_FOUND', message: `Unknown project: ${slug}` } },
+    404,
+  )
 }
 
 interface TailResult {

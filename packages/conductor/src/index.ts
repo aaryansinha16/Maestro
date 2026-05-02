@@ -25,13 +25,6 @@ async function main(): Promise<void> {
 
   const dbHandle = openDatabase({ dataDir: config.dataDir })
   const startedAt = Date.now()
-  const app = buildServer({
-    startedAt,
-    version: PACKAGE_VERSION,
-    db: dbHandle.db,
-    dataDir: config.dataDir,
-    developerName: config.developerName,
-  })
 
   // Reclaim any stale per-project locks left behind by a previous crash.
   const { ProjectLockManager } = await import('./locks.js')
@@ -89,6 +82,17 @@ async function main(): Promise<void> {
     queue,
   })
   startBriefing({ db: dbHandle.db, config })
+
+  const app = buildServer({
+    startedAt,
+    version: PACKAGE_VERSION,
+    db: dbHandle.db,
+    dataDir: config.dataDir,
+    developerName: config.developerName,
+    queue,
+    scheduler,
+    schedulerTimezone: process.env['MAESTRO_TZ'] ?? 'UTC',
+  })
 
   const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
     logger.info({ address: info.address, port: info.port }, 'conductor listening')
