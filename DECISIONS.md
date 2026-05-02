@@ -305,4 +305,70 @@ If a future agent implementation ignores SIGTERM, the `budget + 30s` SIGKILL sti
 
 ---
 
+## ADR-020: In-memory job queue, opt-in scheduling, no Redis/Bull in v1
+
+**Date**: 2026-05-02
+**Decision**: Phase 2 ships an in-memory `JobQueue` backed by a SQLite `job_queue` table for crash recovery. We deliberately do NOT introduce Redis/Bull/BullMQ. Scheduling is also opt-in per project: every existing and new project starts with `scheduledEnabled = false`.
+
+**Reasoning**:
+- Single-conductor, single-host topology (ADR-002 / ADR-012). A second process layer would buy queueing semantics we already get atomically from SQLite.
+- The full v1 working set fits in memory (≤ 10 projects × handful of queued jobs). Redis would be a deployment burden disproportionate to the workload.
+- Crash recovery is the one Redis/Bull benefit we genuinely need. We get it from the SQLite-backed queue: `cancelStaleOnBoot()` marks rows still in `running` after a previous boot as `cancelled` with reason `conductor-restart`. The next pump finds open slots immediately.
+- Opt-in scheduling is a safety property. Phase 2 must work with zero projects registered (umbrella #17 hard requirement). Defaulting `scheduledEnabled = false` means we cannot accidentally fire scheduled sessions on a real project the developer hasn't explicitly enabled — even if they had `scheduled: "0 */6 * * *"` in their autonomy.json from Phase 1.
+
+**Alternatives**:
+- (a) BullMQ + Redis — production-ready queueing, but requires Redis on the VPS. Defer until we exceed the in-memory regime (>50 projects or multiple conductors).
+- (b) Auto-enable scheduling on every project — too risky. The "first 2 weeks of any project are for building trust" rule from CLAUDE.md only works if the developer chooses when to flip the switch.
+
+**Implications**:
+- The queue's API is intentionally narrow (`enqueue / cancel / pump / snapshot / stop / hasInFlight`) so we can swap implementations later without touching the scheduler or worker.
+- `MAESTRO_MAX_PARALLEL` (default 2) is the only knob; per-project concurrency stays at 1 enforced by `project_locks` (ADR-012).
+
+---
+
+## ADR-021: Skip rules as a layered, audited stack
+
+**Date**: 2026-05-02
+**Decision**: The six Phase 2 skip rules run in a deterministic, cheapest-first order. Each returns a typed `SkipDecision` (`reason: ScheduleSkipReason`, optional `notes`) or `null`. The first rule that fires short-circuits the chain. Every cron tick — fired or skipped — writes a row to `scheduled_runs` with the action and reason. The audit log is the answer to "why didn't Maestro fire this morning?".
+
+Order:
+
+1. D — `auto-paused` (DB lookup, free)
+2. manual-paused (`autonomy.level === 'paused'`, free)
+3. C — skip-day (date math)
+4. B — max-sessions-per-day (one indexed COUNT)
+5. F — failure-backoff (one indexed SELECT, 3+ consecutive failures → skip)
+6. E — cost-throttle-low-priority / -budget-exceeded (uses `CostRepository.aggregate()`)
+7. A — developer-recently-active (shells out to `git log`)
+
+**Reasoning**: A 1-3 cost-ordered chain pays the 5 ms `git log` only when the cheaper rules let the tick through. The audit log makes skip decisions debuggable — without it, "Maestro didn't run" looks like a system bug instead of a designed behaviour. Typed `ScheduleSkipReason` enums let the dashboard label rows precisely.
+
+**Implications**:
+- Adding a rule means adding a new `ScheduleSkipReason` enum value, a function in `skip-rules.ts`, and a position in the chain.
+- Manual triggers bypass the chain entirely (they go through `JobQueue.enqueue` with `source: 'manual'`, not through the scheduler).
+- Auto-pause is its own state in `projects` (ADR-022) so its detection is O(1) — Rule D doesn't have to walk the failure history every tick.
+
+---
+
+## ADR-022: Hot reload via 30-second polling
+
+**Date**: 2026-05-02
+**Decision**: The scheduler reconciles its registered cron jobs against the projects table by polling every `SCHEDULER_POLL_INTERVAL_MS` (30 s) rather than via a SQLite trigger / WAL hook / event bus. The HTTP API and CLI also call `scheduler.reconcileNow()` after writes so changes made through those paths are instant.
+
+**Reasoning**:
+- 30 s is an acceptable maximum lag for a developer adjusting their own schedules. The two paths that *can* skip the lag (API, CLI) already do via `reconcileNow()`.
+- SQLite triggers can't easily call back into the application layer (would need a cross-process notify channel — Pusher, NOTIFY, etc.).
+- A dedicated event bus (e.g. an EventEmitter exposed from the repositories) would couple every write site to the scheduler and grow more complex as more subsystems subscribe.
+- Polling is observable: a single setInterval, a single `reconcileNow()` method, easy to test deterministically.
+
+**Alternatives**:
+- (a) SQLite WAL-based notify (e.g. `update_hook` from better-sqlite3). Real-time but requires the scheduler to disambiguate which projects changed and re-enter the reconciler in a non-trivial way.
+- (b) In-process EventEmitter on every repository write. Simple but spreads coupling across the codebase.
+
+**Implications**:
+- Schedules written via direct SQL (or a future migration tool) take up to 30 s to take effect. Documented in `docs/SCHEDULING.md`.
+- The poll is unref'd so it doesn't keep the process alive past graceful shutdown.
+
+---
+
 *Add new decisions above this line. Keep them numbered sequentially.*
