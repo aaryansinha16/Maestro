@@ -3,9 +3,18 @@
 
 import { config as loadDotenv } from 'dotenv'
 import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
 import { DEFAULT_DATA_DIR, DEFAULT_PORT, MaestroError } from '@maestro/shared'
+
+// The directory containing the .env file we loaded — used as the
+// resolution root for relative paths in env values like
+// MAESTRO_DATA_DIR=./data. Without this, the same .env produces
+// different absolute paths depending on whether the process was
+// launched from the repo root (CLI) or from packages/conductor (`pnpm
+// dev`), which silently splits one logical SQLite database into two
+// (issue #34).
+let envFileDir: string | null = null
 
 // Walk up from cwd looking for a .env so that running the conductor from
 // inside packages/conductor still picks up the repo-root .env in development.
@@ -17,6 +26,7 @@ function loadEnvFile(): void {
     const candidate = resolve(dir, '.env')
     if (existsSync(candidate)) {
       loadDotenv({ path: candidate })
+      envFileDir = dir
       return
     }
     const parent = dirname(dir)
@@ -62,5 +72,21 @@ export function loadConfig(): Config {
     })
   }
 
-  return parsed.data
+  // Stabilise dataDir against the .env's directory rather than the
+  // process cwd. Absolute paths pass through unchanged.
+  const dataDir = resolveAgainstEnvFile(parsed.data.dataDir)
+
+  return { ...parsed.data, dataDir }
+}
+
+/**
+ * Resolve a relative path against the directory that contained the
+ * `.env` we loaded (typically the repo root). Absolute paths are
+ * returned unchanged. Falls back to the process cwd when no `.env`
+ * was found — matches the pre-fix behaviour for that edge case.
+ */
+function resolveAgainstEnvFile(p: string): string {
+  if (isAbsolute(p)) return p
+  const base = envFileDir ?? process.cwd()
+  return resolve(base, p)
 }
