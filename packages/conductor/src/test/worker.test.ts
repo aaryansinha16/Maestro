@@ -145,7 +145,9 @@ interface FakeGitHub extends GitHubClient {
   merged: { prNumber: number; method?: string }[]
 }
 
-function fakeGitHub(opts: { mergeBlocked?: boolean } = {}): FakeGitHub {
+function fakeGitHub(
+  opts: { mergeBlocked?: boolean; existingPrForBranch?: string; existingPrNumber?: number } = {},
+): FakeGitHub {
   const created: CreatePullRequestInput[] = []
   const labelsAdded: AddLabelsInput[] = []
   const merged: { prNumber: number; method?: string }[] = []
@@ -179,6 +181,22 @@ function fakeGitHub(opts: { mergeBlocked?: boolean } = {}): FakeGitHub {
       labelsAdded.push(req)
     },
     async listOpenPullRequests(_repo: RepoCoords) {
+      if (opts.existingPrForBranch) {
+        return [
+          {
+            number: opts.existingPrNumber ?? 99,
+            url: `https://example.test/pr/${opts.existingPrNumber ?? 99}`,
+            title: 'existing PR',
+            body: '',
+            status: 'open' as const,
+            branchName: opts.existingPrForBranch,
+            baseBranch: 'main',
+            createdAt: new Date().toISOString(),
+            mergedAt: null,
+            sessionId: null,
+          },
+        ]
+      }
       return []
     },
     async verifyScopes() {
@@ -353,6 +371,45 @@ describe('runSession (integration)', () => {
     expect(result.prNumber).toBe(42)
     expect(gh.merged).toHaveLength(1)
     expect(result.notes).toContain('auto-merge blocked')
+  }, 60_000)
+
+  it('agent reuses an existing PR branch — worker reuses the open PR instead of 422-ing', async () => {
+    harness = await setupHarness('all-good')
+    const { db, config, slug } = harness
+    const projects = new ProjectRepository(db.db)
+    const project = projects.findBySlug(slug)
+    if (!project) throw new Error('project missing')
+
+    const branch = `maestro/${slug}/auth-routing-fix`
+    // Pre-seed an open PR for this branch — simulates "agent is addressing
+    // PR feedback by adding commits to the existing PR's branch", which is
+    // the natural workflow for the PR-feedback loop. Without the
+    // detect-existing-PR check in worker.ts, GitHub would 422 on create.
+    const gh = fakeGitHub({ existingPrForBranch: branch, existingPrNumber: 99 })
+    process.env['MAESTRO_MOCK_INLINE'] = JSON.stringify({
+      files: { 'README.md': '# Fixture\n\nAddressed feedback.\n' },
+      branch,
+      commitMessage: '[#99] refactor: address feedback',
+      stateBody:
+        '# Current State\n\n## Focus\nx.\n\n## Next Concrete Tasks\n- [ ] x\n\n## Blockers\n\n_(none)_\n\n## Recent Context\n\nx.\n\n## Notes\n\n',
+      journalFilename: '2026-05-08-09-00-00.md',
+      journalBody:
+        '# Session\n\n## Goal\nAddressed PR #99 feedback (logger).\n\n## What I Did\nReplaced consoles.\n',
+    })
+
+    const result = await runSession({
+      db: db.db,
+      config,
+      project,
+      claudeBin: MOCK_CLAUDE,
+      githubClient: gh,
+      skipClaudeProbe: true,
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.prNumber).toBe(99) // existing PR, not a new 42
+    expect(gh.created).toHaveLength(0) // never tried to create
+    expect(result.notes ?? '').toContain('commits added to existing PR')
   }, 60_000)
 
   it('refuses to run a second session for the same project (lock)', async () => {

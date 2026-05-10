@@ -37,6 +37,7 @@ import {
   isOrientationModeFromContext,
   type ContinuationContext,
   type Project,
+  type PullRequest,
   type SessionStatus,
   type SessionResult,
   type QualityGate,
@@ -621,17 +622,41 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
     journalRef,
   ].join('\n')
 
-  const pr = await githubClient.createPullRequest({
-    repo,
-    branchName: branch,
-    baseBranch,
-    title,
-    body,
-    draft:
-      project.autonomyConfig.level === 'draft-only' ||
-      project.autonomyConfig.github.draftByDefault,
-    labels: project.autonomyConfig.github.prLabels,
+  // If the agent reused an existing branch (e.g. addressing PR feedback by
+  // adding commits to the open PR's branch — which is what a developer would
+  // do), GitHub returns 422 on createPullRequest because a PR already exists
+  // for that head ref. The push above already updated that PR with the new
+  // commits, so we just need to recognise the situation and proceed without
+  // creating a duplicate. Without this check the 422 throws out of the worker
+  // before baseFinalize runs, which means PR-feedback rows never get marked
+  // processed and the next session sees the same feedback again.
+  let pr: PullRequest
+  let prAlreadyExisted = false
+  const openPrs = await githubClient.listOpenPullRequests(repo).catch((err) => {
+    logger.warn({ err }, 'could not pre-check open PRs; will attempt create')
+    return [] as PullRequest[]
   })
+  const existing = openPrs.find((p) => p.branchName === branch)
+  if (existing) {
+    pr = existing
+    prAlreadyExisted = true
+    logger.info(
+      { prNumber: pr.number, branch },
+      'pr-manager: branch already has an open PR — added commits to existing PR',
+    )
+  } else {
+    pr = await githubClient.createPullRequest({
+      repo,
+      branchName: branch,
+      baseBranch,
+      title,
+      body,
+      draft:
+        project.autonomyConfig.level === 'draft-only' ||
+        project.autonomyConfig.github.draftByDefault,
+      labels: project.autonomyConfig.github.prLabels,
+    })
+  }
 
   if (project.autonomyConfig.level === 'full') {
     const merge = await githubClient.mergePullRequest({
@@ -662,7 +687,7 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
 
   return baseFinalize('completed', {
     prNumber: pr.number,
-    notes: pr.url,
+    notes: prAlreadyExisted ? `${pr.url} (commits added to existing PR)` : pr.url,
   })
 }
 
