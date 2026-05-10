@@ -14,6 +14,7 @@ import { stat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import {
   CostAggregationsResponseSchema,
+  GetProjectFeedbackResponseSchema,
   HealthResponseSchema,
   ListProjectsResponseSchema,
   ListScheduleResponseSchema,
@@ -127,10 +128,11 @@ export function buildServer(deps: ServerDeps): Hono {
     if (!project) {
       return c.json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Unknown project' } }, 404)
     }
-    return c.json({
+    const body = GetProjectFeedbackResponseSchema.parse({
       pending: feedback.pendingForProject(project.id),
       pendingCount: feedback.pendingCount(project.id),
     })
+    return c.json(body)
   })
 
   app.get('/api/sessions', (c) => {

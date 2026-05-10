@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import type {
   GetProjectResponse,
+  GetProjectFeedbackResponse,
   ListScheduleResponse,
   ListSessionsResponse,
   ListSkipsResponse,
@@ -16,6 +17,7 @@ export function ProjectDetail() {
   const [project, setProject] = useState<GetProjectResponse | null>(null)
   const [sessions, setSessions] = useState<ListSessionsResponse | null>(null)
   const [costs, setCosts] = useState<CostAggregationsResponse | null>(null)
+  const [feedback, setFeedback] = useState<GetProjectFeedbackResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [triggerState, setTriggerState] = useState<
     { kind: 'idle' } | { kind: 'pending' } | { kind: 'ok'; jobId: string } | { kind: 'err'; message: string }
@@ -27,11 +29,17 @@ export function ProjectDetail() {
     void Promise.all([
       api.get<GetProjectResponse>(`/api/projects/${encodeURIComponent(slug)}`),
       api.get<CostAggregationsResponse>('/api/costs'),
+      api
+        .get<GetProjectFeedbackResponse>(
+          `/api/projects/${encodeURIComponent(slug)}/feedback`,
+        )
+        .catch(() => ({ pending: [], pendingCount: 0 }) as GetProjectFeedbackResponse),
     ])
-      .then(async ([p, c]) => {
+      .then(async ([p, c, f]) => {
         if (cancelled) return
         setProject(p)
         setCosts(c)
+        setFeedback(f)
         const s = await api.get<ListSessionsResponse>(
           `/api/sessions?projectId=${encodeURIComponent(p.project.id)}&limit=20`,
         )
@@ -85,6 +93,15 @@ export function ProjectDetail() {
           <span className="pill pill-amber">{p.autonomyConfig.level}</span>
           <span className="pill">budget {Math.round(p.autonomyConfig.timeBudget / 60)}m</span>
           <span className="pill font-mono">{p.autonomyConfig.schedule}</span>
+          {feedback && feedback.pendingCount > 0 ? (
+            <Link
+              to={`/projects/${encodeURIComponent(p.slug)}/feedback`}
+              className="pill pill-amber hover:bg-amber-400/30"
+              title="Reviewer comments waiting to be folded into the next session"
+            >
+              Feedback ({feedback.pendingCount})
+            </Link>
+          ) : null}
           <button
             type="button"
             onClick={() => void triggerNow()}

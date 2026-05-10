@@ -17,6 +17,7 @@ import {
   ScheduledRunSchema,
   WeekdaySchema,
   ProjectPrioritySchema,
+  PrFeedbackSchema,
 } from '@maestro/shared'
 
 // ─── Common ──────────────────────────────────────────────────────────
@@ -155,6 +156,13 @@ export const QueueResponseSchema = z.object({
 
 export const ListSkipsResponseSchema = z.object({
   skips: z.array(ScheduledRunSchema),
+})
+
+// ─── PR feedback (Phase 4 / Sub 1) ───────────────────────────────────
+
+export const GetProjectFeedbackResponseSchema = z.object({
+  pending: z.array(PrFeedbackSchema),
+  pendingCount: z.number().int().nonnegative(),
 })
 
 // ─── Route registry ──────────────────────────────────────────────────
