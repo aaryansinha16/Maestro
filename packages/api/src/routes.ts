@@ -165,6 +165,38 @@ export const GetProjectFeedbackResponseSchema = z.object({
   pendingCount: z.number().int().nonnegative(),
 })
 
+// ─── Autonomy editing (Phase 4.5 / Sub 4.5.3) ────────────────────────
+
+// Fields editable via /api/projects/:slug/autonomy. Schedule-side fields
+// (schedule, skipDays, maxSessionsPerDay, priority) and the
+// scheduledEnabled flag are intentionally excluded — they go through
+// /api/projects/:slug/schedule and /scheduling/{enable,disable}.
+//
+// `level: 'paused'` is accepted here for the "persistently paused"
+// semantic; the pause endpoint at /pause is for transient pauses
+// reflected in auto_paused_at.
+export const UpdateAutonomyBodySchema = z.object({
+  level: z.enum(['full', 'pr-only', 'draft-only', 'paused']).optional(),
+  timeBudget: z.number().int().positive().optional(),
+  qualityGates: z
+    .array(z.enum(['test', 'lint', 'typecheck', 'build']))
+    .optional(),
+  branches: z
+    .object({
+      base: z.string().min(1).optional(),
+      prefix: z.string().min(1).optional(),
+    })
+    .optional(),
+  github: z
+    .object({
+      prLabels: z.array(z.string()).optional(),
+      draftByDefault: z.boolean().optional(),
+    })
+    .optional(),
+  continueUntilBudget: z.boolean().optional(),
+  minTimeForContinuation: z.number().int().positive().optional(),
+})
+
 // ─── Route registry ──────────────────────────────────────────────────
 
 // A typed catalogue of every route, useful to the dashboard's fetch wrapper
@@ -193,6 +225,8 @@ export const ROUTES = {
   triggerProject: { method: 'POST', path: '/api/projects/:slug/trigger' },
   // Phase 4 / Sub 1.
   getProjectFeedback: { method: 'GET', path: '/api/projects/:slug/feedback' },
+  // Phase 4.5 / Sub 4.5.3.
+  updateAutonomy: { method: 'POST', path: '/api/projects/:slug/autonomy' },
 } as const
 
 export type RouteKey = keyof typeof ROUTES

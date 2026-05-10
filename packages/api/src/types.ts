@@ -23,6 +23,7 @@ import type {
   QueueResponseSchema,
   ListSkipsResponseSchema,
   GetProjectFeedbackResponseSchema,
+  UpdateAutonomyBodySchema,
 } from './routes.js'
 
 export type HealthResponse = z.infer<typeof HealthResponseSchema>
@@ -51,3 +52,4 @@ export type PauseProjectBody = z.infer<typeof PauseProjectBodySchema>
 export type QueueResponse = z.infer<typeof QueueResponseSchema>
 export type ListSkipsResponse = z.infer<typeof ListSkipsResponseSchema>
 export type GetProjectFeedbackResponse = z.infer<typeof GetProjectFeedbackResponseSchema>
+export type UpdateAutonomyBody = z.infer<typeof UpdateAutonomyBodySchema>
