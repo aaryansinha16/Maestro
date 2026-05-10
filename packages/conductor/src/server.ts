@@ -9,6 +9,7 @@ import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import { logger as honoLogger } from 'hono/logger'
 import { HTTPException } from 'hono/http-exception'
+import { ZodError } from 'zod'
 import { existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
@@ -22,6 +23,7 @@ import {
   ListSkipsResponseSchema,
   PauseProjectBodySchema,
   QueueResponseSchema,
+  UpdateAutonomyBodySchema,
   UpdateScheduleBodySchema,
 } from '@maestro/api'
 import {
@@ -86,6 +88,21 @@ export function buildServer(deps: ServerDeps): Hono {
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse()
+    // ZodError → 400. Catches request-body validation failures from any
+    // handler that calls Schema.parse() on user input (which is most of
+    // them). Without this they bubble to the generic 500 below.
+    if (err instanceof ZodError) {
+      return c.json(
+        {
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Request validation failed',
+            issues: err.issues,
+          },
+        },
+        400,
+      )
+    }
     if (isMaestroError(err)) {
       logger.error({ err }, 'request failed with MaestroError')
       return c.json(
@@ -357,6 +374,34 @@ export function buildServer(deps: ServerDeps): Hono {
       ...body,
     })
     projects.updateAutonomyConfig(slug, merged)
+    deps.scheduler?.reconcileNow()
+    return c.json({ ok: true })
+  })
+
+  app.post('/api/projects/:slug/autonomy', async (c) => {
+    const slug = c.req.param('slug')
+    const project = projects.findBySlug(slug)
+    if (!project) return notFoundProject(c, slug)
+    const raw = (await c.req.json().catch(() => ({}))) as unknown
+    const body = UpdateAutonomyBodySchema.parse(raw)
+    // Deep-merge: nested objects (branches, github) should patch, not
+    // replace, so the caller can change just one nested field at a time.
+    const merged = AutonomyFileSchema.parse({
+      ...project.autonomyConfig,
+      ...body,
+      branches: {
+        ...project.autonomyConfig.branches,
+        ...(body.branches ?? {}),
+      },
+      github: {
+        ...project.autonomyConfig.github,
+        ...(body.github ?? {}),
+      },
+    })
+    projects.updateAutonomyConfig(slug, merged)
+    // The scheduler doesn't track these fields, but reconcileNow is cheap
+    // and keeps cron-registration consistent if `level` flipped to
+    // 'paused' (skip rule fires on the next tick regardless).
     deps.scheduler?.reconcileNow()
     return c.json({ ok: true })
   })

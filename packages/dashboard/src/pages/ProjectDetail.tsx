@@ -7,9 +7,11 @@ import type {
   ListSessionsResponse,
   ListSkipsResponse,
   CostAggregationsResponse,
+  UpdateAutonomyBody,
 } from '@maestro/api'
 import { useApi } from '../hooks/useApi'
 import { formatDateTime, formatDuration, statusLabel } from '../lib/format'
+import { AutonomyForm } from '../components/AutonomyForm'
 
 export function ProjectDetail() {
   const { slug } = useParams<{ slug: string }>()
@@ -203,29 +205,15 @@ export function ProjectDetail() {
 
       <SchedulingPanel slug={p.slug} />
 
-      <div className="panel">
-        <header className="panel-header">
-          <h3 className="font-medium text-white">Configuration</h3>
-        </header>
-        <dl className="grid grid-cols-1 gap-3 px-5 py-4 text-sm md:grid-cols-2">
-          <Field label="Quality gates" value={p.autonomyConfig.qualityGates.join(', ') || '—'} />
-          <Field
-            label="Branch prefix"
-            value={p.autonomyConfig.branches.prefix}
-            mono
-          />
-          <Field label="Base branch" value={p.autonomyConfig.branches.base} mono />
-          <Field
-            label="PR labels"
-            value={p.autonomyConfig.github.prLabels.join(', ') || '—'}
-          />
-          <Field
-            label="Draft by default"
-            value={p.autonomyConfig.github.draftByDefault ? 'yes' : 'no'}
-          />
-          <Field label="Max sessions / day" value={String(p.autonomyConfig.maxSessionsPerDay)} />
-        </dl>
-      </div>
+      <ConfigurationPanel
+        project={p}
+        onSaved={async () => {
+          const next = await api.get<GetProjectResponse>(
+            `/api/projects/${encodeURIComponent(p.slug)}`,
+          )
+          setProject(next)
+        }}
+      />
 
       <p className="text-xs text-navy-400">
         Note: state.md and context.md live in the project's git repo (
@@ -235,6 +223,71 @@ export function ProjectDetail() {
         ). Edit them via git, not the dashboard.
       </p>
     </section>
+  )
+}
+
+function ConfigurationPanel({
+  project,
+  onSaved,
+}: {
+  project: GetProjectResponse['project']
+  onSaved: () => Promise<void> | void
+}) {
+  const api = useApi()
+  const [editing, setEditing] = useState(false)
+
+  const save = async (patch: UpdateAutonomyBody) => {
+    await api.post(`/api/projects/${encodeURIComponent(project.slug)}/autonomy`, patch)
+    await onSaved()
+    setEditing(false)
+  }
+
+  return (
+    <div className="panel">
+      <header className="panel-header">
+        <h3 className="font-medium text-white">Configuration</h3>
+        <button
+          type="button"
+          onClick={() => setEditing((v) => !v)}
+          className="text-xs text-amber-400 hover:underline"
+        >
+          {editing ? 'cancel' : 'edit autonomy'}
+        </button>
+      </header>
+      {editing ? (
+        <AutonomyForm
+          value={project.autonomyConfig}
+          onSubmit={save}
+          onCancel={() => setEditing(false)}
+        />
+      ) : (
+        <dl className="grid grid-cols-1 gap-3 px-5 py-4 text-sm md:grid-cols-2">
+          <Field label="Quality gates" value={project.autonomyConfig.qualityGates.join(', ') || '—'} />
+          <Field label="Branch prefix" value={project.autonomyConfig.branches.prefix} mono />
+          <Field label="Base branch" value={project.autonomyConfig.branches.base} mono />
+          <Field
+            label="PR labels"
+            value={project.autonomyConfig.github.prLabels.join(', ') || '—'}
+          />
+          <Field
+            label="Draft by default"
+            value={project.autonomyConfig.github.draftByDefault ? 'yes' : 'no'}
+          />
+          <Field
+            label="Max sessions / day"
+            value={String(project.autonomyConfig.maxSessionsPerDay)}
+          />
+          <Field
+            label="Continue until budget"
+            value={project.autonomyConfig.continueUntilBudget ? 'enabled' : 'disabled'}
+          />
+          <Field
+            label="Min time for continuation"
+            value={`${Math.round(project.autonomyConfig.minTimeForContinuation / 60)}m`}
+          />
+        </dl>
+      )}
+    </div>
   )
 }
 
@@ -306,6 +359,14 @@ function SchedulingPanel({ slug }: { slug: string }) {
     setSchedule(next)
   }
 
+  const pause = async () => {
+    const reason = window.prompt('Pause reason (will appear in scheduled-runs audit log):', 'manual pause from dashboard')
+    if (reason === null) return // cancelled
+    await api.post(`/api/projects/${encodeURIComponent(slug)}/pause`, { reason })
+    const next = await api.get<ListScheduleResponse>('/api/schedule')
+    setSchedule(next)
+  }
+
   return (
     <div className="panel">
       <header className="panel-header">
@@ -317,7 +378,14 @@ function SchedulingPanel({ slug }: { slug: string }) {
           >
             resume now
           </button>
-        ) : null}
+        ) : (
+          <button
+            onClick={() => void pause()}
+            className="text-xs text-navy-400 hover:text-amber-400 hover:underline"
+          >
+            pause
+          </button>
+        )}
       </header>
       <div className="grid grid-cols-1 gap-3 px-5 py-4 text-sm md:grid-cols-3">
         <div>
