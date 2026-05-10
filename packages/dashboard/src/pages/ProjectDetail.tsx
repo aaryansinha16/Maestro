@@ -17,6 +17,9 @@ export function ProjectDetail() {
   const [sessions, setSessions] = useState<ListSessionsResponse | null>(null)
   const [costs, setCosts] = useState<CostAggregationsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [triggerState, setTriggerState] = useState<
+    { kind: 'idle' } | { kind: 'pending' } | { kind: 'ok'; jobId: string } | { kind: 'err'; message: string }
+  >({ kind: 'idle' })
 
   useEffect(() => {
     if (!slug) return
@@ -47,6 +50,22 @@ export function ProjectDetail() {
 
   const p = project.project
   const projCost = costs?.perProject.find((x) => x.projectId === p.id) ?? null
+  const isPaused = p.autonomyConfig.level === 'paused' || p.autoPausedAt !== null
+
+  const triggerNow = async () => {
+    setTriggerState({ kind: 'pending' })
+    try {
+      const res = await api.post<{ ok: true; jobId: string }>(
+        `/api/projects/${encodeURIComponent(p.slug)}/trigger`,
+      )
+      setTriggerState({ kind: 'ok', jobId: res.jobId })
+    } catch (err) {
+      setTriggerState({
+        kind: 'err',
+        message: err instanceof Error ? err.message : 'failed to trigger',
+      })
+    }
+  }
 
   return (
     <section className="mx-auto max-w-5xl space-y-8">
@@ -66,8 +85,40 @@ export function ProjectDetail() {
           <span className="pill pill-amber">{p.autonomyConfig.level}</span>
           <span className="pill">budget {Math.round(p.autonomyConfig.timeBudget / 60)}m</span>
           <span className="pill font-mono">{p.autonomyConfig.schedule}</span>
+          <button
+            type="button"
+            onClick={() => void triggerNow()}
+            disabled={isPaused || triggerState.kind === 'pending'}
+            title={
+              isPaused
+                ? 'Project is paused — resume it before triggering'
+                : 'Enqueue a manual session with priority 100'
+            }
+            className="rounded border border-amber-400/60 bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-200 transition hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-amber-400/10"
+          >
+            {triggerState.kind === 'pending' ? 'Triggering…' : 'Trigger now'}
+          </button>
         </div>
       </header>
+
+      {triggerState.kind === 'ok' ? (
+        <div className="panel border-success-500/40 bg-success-500/10 px-4 py-2 text-sm text-success-400">
+          Session enqueued — job{' '}
+          <Link to="/queue" className="font-mono text-success-400 hover:underline">
+            {triggerState.jobId.slice(0, 8)}
+          </Link>
+          . Watch progress on{' '}
+          <Link to="/queue" className="text-success-400 hover:underline">
+            the queue page
+          </Link>
+          .
+        </div>
+      ) : null}
+      {triggerState.kind === 'err' ? (
+        <div className="panel border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger">
+          Trigger failed: {triggerState.message}
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat
