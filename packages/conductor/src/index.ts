@@ -3,6 +3,9 @@
 // off this module once their phases land.
 
 import { serve } from '@hono/node-server'
+import { existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { loadConfig } from './config.js'
 import { openDatabase } from './db.js'
 import { buildServer } from './server.js'
@@ -83,6 +86,7 @@ async function main(): Promise<void> {
   })
   startBriefing({ db: dbHandle.db, config })
 
+  const dashboardDir = resolveDashboardDir()
   const app = buildServer({
     startedAt,
     version: PACKAGE_VERSION,
@@ -93,6 +97,7 @@ async function main(): Promise<void> {
     scheduler,
     schedulerTimezone: process.env['MAESTRO_TZ'] ?? 'UTC',
     ...(config.githubToken ? { githubToken: config.githubToken } : {}),
+    ...(dashboardDir ? { dashboardDir } : {}),
   })
 
   const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
@@ -115,6 +120,29 @@ async function main(): Promise<void> {
   }
   process.on('SIGINT', () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
+}
+
+/**
+ * Phase 5 / Sub 5.1: locate the dashboard's static build. Resolution order:
+ *   1. MAESTRO_DASHBOARD_DIR (explicit override)
+ *   2. /app/dashboard (the Docker image layout)
+ *   3. ../../dashboard/dist relative to this file (repo layout —
+ *      packages/conductor/{src,dist} → packages/dashboard/dist)
+ * Returns undefined when none exist; in dev that's normal (Vite serves
+ * the dashboard itself on 5173).
+ */
+function resolveDashboardDir(): string | undefined {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    process.env['MAESTRO_DASHBOARD_DIR'],
+    '/app/dashboard',
+    resolve(here, '../../dashboard/dist'),
+  ].filter((c): c is string => Boolean(c))
+  for (const candidate of candidates) {
+    if (existsSync(resolve(candidate, 'index.html'))) return resolve(candidate)
+  }
+  logger.debug({ candidates }, 'no static dashboard build found — /api only')
+  return undefined
 }
 
 main().catch((err) => {

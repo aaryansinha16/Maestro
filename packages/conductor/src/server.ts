@@ -11,8 +11,9 @@ import { logger as honoLogger } from 'hono/logger'
 import { HTTPException } from 'hono/http-exception'
 import { ZodError } from 'zod'
 import { existsSync } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
+import { extname, join, normalize, resolve as resolvePath } from 'node:path'
 import {
   CostAggregationsResponseSchema,
   GetProjectFeedbackResponseSchema,
@@ -100,6 +101,13 @@ export interface ServerDeps {
    */
   githubToken?: string
   githubClient?: GitHubClient
+  /**
+   * Phase 5 / Sub 5.1: absolute path to the dashboard's static build
+   * (vite dist). When set and the directory exists, every non-/api GET
+   * serves from it with an index.html SPA fallback. Unset in tests that
+   * don't care and in dev (Vite serves the dashboard itself).
+   */
+  dashboardDir?: string
 }
 
 export function buildServer(deps: ServerDeps): Hono {
@@ -635,11 +643,92 @@ export function buildServer(deps: ServerDeps): Hono {
     return c.json(body)
   })
 
+  // ── Phase 5 / Sub 5.1: static dashboard ─────────────────────────────
+  // Registered last so every /api route wins first. Any other GET serves
+  // the vite build with an index.html SPA fallback. Unmatched /api GETs
+  // still return JSON 404 (the guard below), never HTML.
+  if (deps.dashboardDir && existsSync(deps.dashboardDir)) {
+    const root = resolvePath(deps.dashboardDir)
+    app.get('*', async (c) => {
+      const path = c.req.path
+      if (path.startsWith('/api')) {
+        return c.json({ error: { code: 'NOT_FOUND', message: `No route for ${path}` } }, 404)
+      }
+      const served = await serveDashboardFile(root, path)
+      if (!served) {
+        return c.json({ error: { code: 'NOT_FOUND', message: `No route for ${path}` } }, 404)
+      }
+      return c.body(new Uint8Array(served.body), 200, {
+        'content-type': served.contentType,
+        'cache-control': served.immutable
+          ? 'public, max-age=31536000, immutable'
+          : 'no-cache',
+      })
+    })
+    logger.info({ dashboardDir: root }, 'serving static dashboard')
+  }
+
   app.notFound((c) =>
     c.json({ error: { code: 'NOT_FOUND', message: `No route for ${c.req.path}` } }, 404),
   )
 
   return app
+}
+
+// ─── Static dashboard helpers (Phase 5 / Sub 5.1) ────────────────────
+
+const STATIC_CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+}
+
+interface ServedFile {
+  body: Buffer
+  contentType: string
+  /** Vite emits content-hashed filenames under /assets — cache forever. */
+  immutable: boolean
+}
+
+async function serveDashboardFile(root: string, urlPath: string): Promise<ServedFile | null> {
+  // Normalize + contain within root. Anything that escapes (.. traversal,
+  // encoded slashes) collapses to the SPA fallback or 404 — never a read
+  // outside `root`.
+  const decoded = decodeURIComponent(urlPath)
+  const relative = normalize(decoded).replace(/^([/\\])+/, '')
+  const candidate = resolvePath(join(root, relative))
+  if (!candidate.startsWith(root)) return null
+
+  const tryRead = async (filePath: string): Promise<ServedFile | null> => {
+    try {
+      const info = await stat(filePath)
+      if (!info.isFile()) return null
+      const body = await readFile(filePath)
+      const ext = extname(filePath).toLowerCase()
+      return {
+        body,
+        contentType: STATIC_CONTENT_TYPES[ext] ?? 'application/octet-stream',
+        immutable: filePath.includes(`${join(root, 'assets')}`) && ext !== '.html',
+      }
+    } catch {
+      return null
+    }
+  }
+
+  // Exact file (e.g. /assets/index-abc.js), else SPA fallback for
+  // route-ish paths (no extension), else nothing.
+  const exact = await tryRead(candidate === root ? join(root, 'index.html') : candidate)
+  if (exact) return exact
+  if (extname(decoded) === '') return tryRead(join(root, 'index.html'))
+  return null
 }
 
 function notFoundProject(c: Context, slug: string): Response {
