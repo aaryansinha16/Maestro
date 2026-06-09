@@ -275,6 +275,8 @@ export const ROUTES = {
   githubProbe: { method: 'GET', path: '/api/github/probe' },
   initProject: { method: 'POST', path: '/api/projects/init' },
   registerProject: { method: 'POST', path: '/api/projects/register' },
+  // Phase 5.
+  adminBackup: { method: 'POST', path: '/api/admin/backup' },
 } as const
 
 export type RouteKey = keyof typeof ROUTES

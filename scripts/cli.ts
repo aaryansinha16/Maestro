@@ -28,6 +28,7 @@ import {
   runSkips,
 } from './cli/scheduling.js'
 import { runFeedback } from './cli/feedback.js'
+import { runBackup } from './cli/backup.js'
 import { failWith, loadEnvFromRepoRoot } from './cli/util.js'
 
 loadEnvFromRepoRoot()
@@ -232,6 +233,12 @@ cli
   .command('feedback <slug>', 'Show unprocessed PR comments that will be fed into the next session')
   .action(async (slug: string) => {
     await runFeedback(slug)
+  })
+
+cli
+  .command('backup', 'Snapshot the SQLite database now and prune old backups')
+  .action(async () => {
+    await runBackup()
   })
 
 cli.help()
