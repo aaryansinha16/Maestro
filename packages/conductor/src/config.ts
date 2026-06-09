@@ -55,6 +55,11 @@ const ConfigSchema = z.object({
   // Optional CORS allowlist origin. Unset → no CORS middleware at all
   // (same-origin only — correct once the conductor serves the dashboard).
   corsOrigin: z.string().optional(),
+  // Phase 5 / Sub 5.4: HH:MM (24h) local to MAESTRO_TZ for the daily briefing.
+  briefingTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'expected HH:MM')
+    .default('08:00'),
   nodeEnv: z.enum(['development', 'production', 'test']).default('development'),
 })
 
@@ -74,6 +79,7 @@ export function loadConfig(): Config {
     authUser: process.env.MAESTRO_AUTH_USER || undefined,
     authPassword: process.env.MAESTRO_AUTH_PASSWORD || undefined,
     corsOrigin: process.env.MAESTRO_CORS_ORIGIN || undefined,
+    briefingTime: process.env.MAESTRO_BRIEFING_TIME || undefined,
     nodeEnv: process.env.NODE_ENV,
   })
 
