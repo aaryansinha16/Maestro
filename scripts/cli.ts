@@ -185,22 +185,31 @@ cli
 
 // ─── Phase 2: scheduling commands ───────────────────────────────────
 
+// NOTE: cac matches a command by its FIRST argv token only — names with
+// spaces ('schedule enable') never match and silently no-op (#72). All
+// multi-word commands therefore take the action as a positional and
+// dispatch manually.
 cli
-  .command('schedule enable <slug>', 'Enable scheduled execution for a project')
-  .action(async (slug: string) => {
-    await runScheduleEnable(slug)
-  })
-
-cli
-  .command('schedule disable <slug>', 'Disable scheduled execution for a project')
-  .action(async (slug: string) => {
-    await runScheduleDisable(slug)
-  })
-
-cli
-  .command('schedule list', 'Show every project with its scheduling state and next run')
-  .action(async () => {
-    await runScheduleList()
+  .command(
+    'schedule <action> [slug]',
+    'Scheduled execution: enable <slug> | disable <slug> | list',
+  )
+  .action(async (action: string, slug: string | undefined) => {
+    switch (action) {
+      case 'enable':
+        if (!slug) failWith('usage: maestro schedule enable <slug>')
+        await runScheduleEnable(slug)
+        break
+      case 'disable':
+        if (!slug) failWith('usage: maestro schedule disable <slug>')
+        await runScheduleDisable(slug)
+        break
+      case 'list':
+        await runScheduleList()
+        break
+      default:
+        failWith(`Unknown schedule action: ${action} (expected enable | disable | list)`)
+    }
   })
 
 cli
@@ -243,16 +252,19 @@ cli
   })
 
 cli
-  .command('briefing preview', "Print today's briefing without sending or recording it")
-  .action(async () => {
-    await runBriefingPreview()
-  })
-
-cli
-  .command('briefing send', "Generate today's briefing and deliver it via Telegram")
+  .command('briefing <action>', 'Daily briefing: preview | send [--force]')
   .option('--force', 'Send even if a briefing already went out today')
-  .action(async (opts: { force?: boolean }) => {
-    await runBriefingSend({ force: opts.force ?? false })
+  .action(async (action: string, opts: { force?: boolean }) => {
+    switch (action) {
+      case 'preview':
+        await runBriefingPreview()
+        break
+      case 'send':
+        await runBriefingSend({ force: opts.force ?? false })
+        break
+      default:
+        failWith(`Unknown briefing action: ${action} (expected preview | send)`)
+    }
   })
 
 cli.help()
