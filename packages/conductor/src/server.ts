@@ -62,6 +62,7 @@ import {
 } from './project-init.js'
 import { scaffoldOnGitHub } from './github-scaffolder.js'
 import { registerProject } from './project-register.js'
+import { runBackupNow } from './backup.js'
 import { computeNextCronRun } from './cron-utils.js'
 import type { JobQueue } from './job-queue.js'
 import type { Scheduler } from './scheduler.js'
@@ -696,6 +697,13 @@ export function buildServer(deps: ServerDeps): Hono {
       priority: JOB_PRIORITY_MANUAL,
     })
     return c.json({ ok: true, jobId: job.id })
+  })
+
+  // Phase 5 / Sub 5.3: manual backup. Sits behind Basic Auth like every
+  // other non-health route when auth is configured.
+  app.post('/api/admin/backup', async (c) => {
+    const result = await runBackupNow({ db: deps.db, dataDir: deps.dataDir })
+    return c.json({ ok: true, path: result.path, prunedCount: result.prunedCount })
   })
 
   app.get('/api/queue', (c) => {

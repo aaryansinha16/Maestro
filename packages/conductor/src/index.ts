@@ -86,6 +86,17 @@ async function main(): Promise<void> {
   })
   startBriefing({ db: dbHandle.db, config })
 
+  // Phase 5 / Sub 5.3: daily backups + session-log GC at 04:00 UTC.
+  const { startHousekeeping } = await import('./backup.js')
+  const retentionRaw = Number(process.env['MAESTRO_SESSION_LOG_RETENTION_DAYS'])
+  const housekeeping = startHousekeeping({
+    db: dbHandle.db,
+    dataDir: config.dataDir,
+    ...(Number.isFinite(retentionRaw) && retentionRaw > 0
+      ? { retentionDays: retentionRaw }
+      : {}),
+  })
+
   const dashboardDir = resolveDashboardDir()
   const app = buildServer({
     startedAt,
@@ -113,6 +124,7 @@ async function main(): Promise<void> {
     shuttingDown = true
     logger.info({ signal }, 'shutting down')
     void (async () => {
+      housekeeping.stop()
       await scheduler.stop().catch((err) => logger.error({ err }, 'scheduler stop failed'))
       await queue.stop().catch((err) => logger.error({ err }, 'queue stop failed'))
       server.close(() => {
