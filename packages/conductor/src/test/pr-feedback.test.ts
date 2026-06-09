@@ -105,6 +105,18 @@ function makeFakeGitHub(opts: {
       if (!req.since) return all
       return all.filter((c) => c.postedAt > (req.since as string))
     },
+    async getRepoInfo() {
+      return { defaultBranch: 'main', description: null, private: false }
+    },
+    async getFileContent() {
+      return null
+    },
+    async createBranch() {
+      return { sha: 'fake-sha' }
+    },
+    async commitFile() {
+      return { commitSha: 'fake-commit' }
+    },
     async verifyScopes() {},
   }
 }
@@ -362,6 +374,10 @@ describe('syncPendingFeedback', () => {
       async addLabels() {},
       async listOpenPullRequests() { throw new Error('rate limited') },
       async listPullRequestComments() { throw new Error('rate limited') },
+      async getRepoInfo() { throw new Error('not used') },
+      async getFileContent() { return null },
+      async createBranch() { throw new Error('not used') },
+      async commitFile() { throw new Error('not used') },
       async verifyScopes() {},
     }
     const feedback = new PrFeedbackRepository(h.db.db)

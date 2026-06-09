@@ -3,6 +3,7 @@ import { Layout } from './components/Layout'
 import { Overview } from './pages/Overview'
 import { ProjectDetail } from './pages/ProjectDetail'
 import { ProjectFeedback } from './pages/ProjectFeedback'
+import { AddProject } from './pages/AddProject'
 import { Sessions } from './pages/Sessions'
 import { SessionDetail } from './pages/SessionDetail'
 import { PRs } from './pages/PRs'
@@ -16,6 +17,7 @@ export function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Overview />} />
+        <Route path="add-project" element={<AddProject />} />
         <Route path="projects/:slug" element={<ProjectDetail />} />
         <Route path="projects/:slug/feedback" element={<ProjectFeedback />} />
         <Route path="sessions" element={<Sessions />} />

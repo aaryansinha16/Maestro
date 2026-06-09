@@ -18,6 +18,7 @@ import {
   WeekdaySchema,
   ProjectPrioritySchema,
   PrFeedbackSchema,
+  AutonomyFileSchema,
 } from '@maestro/shared'
 
 // ─── Common ──────────────────────────────────────────────────────────
@@ -197,6 +198,49 @@ export const UpdateAutonomyBodySchema = z.object({
   minTimeForContinuation: z.number().int().positive().optional(),
 })
 
+// ─── Project onboarding (Phase 4.5 / Sub 4.5.4) ──────────────────────
+
+export const GithubProbeQuerySchema = z.object({
+  repoUrl: z.string().url(),
+})
+
+export const GithubProbeResponseSchema = z.object({
+  repoUrl: z.string(),
+  projectName: z.string(),
+  defaultBranch: z.string(),
+  description: z.string().nullable(),
+  /** True when .maestro/state.md already exists on the default branch. */
+  hasMaestroDir: z.boolean(),
+  /** Rendered seed context.md the wizard shows (and lets the user edit). */
+  suggestedContext: z.string(),
+})
+
+export const InitProjectBodySchema = z.object({
+  repoUrl: z.string().url(),
+  focus: z.string().min(1),
+  tasks: z.array(z.string()).default([]),
+  /** Full autonomy config — the wizard merges its form over the defaults. */
+  autonomy: AutonomyFileSchema,
+  /** context.md body. When omitted the server re-probes and renders the seed. */
+  context: z.string().optional(),
+  /** false = commit straight to the default branch (no PR). Default true. */
+  openAsPR: z.boolean().default(true),
+})
+
+export const InitProjectResponseSchema = z.object({
+  branch: z.string(),
+  prUrl: z.string().url().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+})
+
+export const RegisterProjectBodySchema = z.object({
+  repoUrl: z.string().url(),
+})
+
+export const RegisterProjectResponseSchema = z.object({
+  project: ProjectSchema,
+})
+
 // ─── Route registry ──────────────────────────────────────────────────
 
 // A typed catalogue of every route, useful to the dashboard's fetch wrapper
@@ -227,6 +271,10 @@ export const ROUTES = {
   getProjectFeedback: { method: 'GET', path: '/api/projects/:slug/feedback' },
   // Phase 4.5 / Sub 4.5.3.
   updateAutonomy: { method: 'POST', path: '/api/projects/:slug/autonomy' },
+  // Phase 4.5 / Sub 4.5.4.
+  githubProbe: { method: 'GET', path: '/api/github/probe' },
+  initProject: { method: 'POST', path: '/api/projects/init' },
+  registerProject: { method: 'POST', path: '/api/projects/register' },
 } as const
 
 export type RouteKey = keyof typeof ROUTES

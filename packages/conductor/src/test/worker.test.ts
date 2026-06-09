@@ -199,6 +199,21 @@ function fakeGitHub(
       }
       return []
     },
+    async listPullRequestComments() {
+      return []
+    },
+    async getRepoInfo() {
+      return { defaultBranch: 'main', description: null, private: false }
+    },
+    async getFileContent() {
+      return null
+    },
+    async createBranch() {
+      return { sha: 'fake-sha' }
+    },
+    async commitFile() {
+      return { commitSha: 'fake-commit' }
+    },
     async verifyScopes() {
       /* no-op */
     },
