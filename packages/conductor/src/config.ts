@@ -46,6 +46,15 @@ const ConfigSchema = z.object({
   telegramBotToken: z.string().optional(),
   telegramChatId: z.string().optional(),
   anthropicApiKey: z.string().optional(),
+  // Phase 5 / Sub 5.2: when BOTH are set, the whole app (static + API,
+  // minus /api/health) sits behind HTTP Basic Auth. Either missing →
+  // auth disabled with a startup warning. Single-user v1; magic-link
+  // deferred to Phase 6.
+  authUser: z.string().min(1).optional(),
+  authPassword: z.string().min(8).optional(),
+  // Optional CORS allowlist origin. Unset → no CORS middleware at all
+  // (same-origin only — correct once the conductor serves the dashboard).
+  corsOrigin: z.string().optional(),
   nodeEnv: z.enum(['development', 'production', 'test']).default('development'),
 })
 
@@ -62,6 +71,9 @@ export function loadConfig(): Config {
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || undefined,
     telegramChatId: process.env.TELEGRAM_CHAT_ID || undefined,
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
+    authUser: process.env.MAESTRO_AUTH_USER || undefined,
+    authPassword: process.env.MAESTRO_AUTH_PASSWORD || undefined,
+    corsOrigin: process.env.MAESTRO_CORS_ORIGIN || undefined,
     nodeEnv: process.env.NODE_ENV,
   })
 

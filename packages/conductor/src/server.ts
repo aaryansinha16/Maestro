@@ -6,6 +6,7 @@
 // happened" view.
 
 import { Hono, type Context } from 'hono'
+import { basicAuth } from 'hono/basic-auth'
 import { cors } from 'hono/cors'
 import { logger as honoLogger } from 'hono/logger'
 import { HTTPException } from 'hono/http-exception'
@@ -108,6 +109,17 @@ export interface ServerDeps {
    * don't care and in dev (Vite serves the dashboard itself).
    */
   dashboardDir?: string
+  /**
+   * Phase 5 / Sub 5.2: HTTP Basic Auth. When BOTH are set, everything
+   * except /api/health (the Railway healthcheck path) requires
+   * credentials. Top-level navigation triggers the browser's native
+   * dialog; same-origin fetches then carry the header automatically, so
+   * no login page is needed for single-user v1.
+   */
+  authUser?: string
+  authPassword?: string
+  /** Optional CORS allow origin. Unset → no CORS middleware (same-origin only). */
+  corsOrigin?: string
 }
 
 export function buildServer(deps: ServerDeps): Hono {
@@ -147,7 +159,30 @@ export function buildServer(deps: ServerDeps): Hono {
   const PROBE_CACHE_TTL_MS = 60_000
 
   app.use('*', honoLogger((msg) => logger.debug(msg)))
-  app.use('/api/*', cors({ origin: '*' }))
+  // CORS only when an explicit origin allowlist is configured. The
+  // production layout serves the dashboard same-origin (Sub 5.1) and the
+  // dev layout proxies through Vite — neither needs CORS.
+  if (deps.corsOrigin) {
+    app.use('/api/*', cors({ origin: deps.corsOrigin }))
+  }
+
+  // Phase 5 / Sub 5.2: Basic Auth across static + API. /api/health stays
+  // open for platform healthchecks (Railway probes it unauthenticated).
+  if (deps.authUser && deps.authPassword) {
+    const requireAuth = basicAuth({
+      username: deps.authUser,
+      password: deps.authPassword,
+    })
+    app.use('*', async (c, next) => {
+      if (c.req.path === '/api/health') return next()
+      return requireAuth(c, next)
+    })
+    logger.info({ user: deps.authUser }, 'basic auth enabled')
+  } else if (deps.authUser || deps.authPassword) {
+    logger.warn(
+      'MAESTRO_AUTH_USER / MAESTRO_AUTH_PASSWORD: only one is set — auth DISABLED. Set both.',
+    )
+  }
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse()
