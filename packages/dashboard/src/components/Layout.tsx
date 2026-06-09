@@ -1,8 +1,16 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from '../store/useStore'
 import { useApi } from '../hooks/useApi'
 import type { HealthResponse } from '@maestro/api'
+
+interface ClaudeHealth {
+  installed: boolean
+  version: string | null
+  authenticated: boolean | null
+  credentialsAt: string | null
+  configDir: string
+}
 
 interface NavItem {
   to: string
@@ -23,6 +31,7 @@ const NAV: NavItem[] = [
 export function Layout() {
   const { setHealth, health } = useStore()
   const api = useApi()
+  const [claude, setClaude] = useState<ClaudeHealth | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -36,11 +45,27 @@ export function Layout() {
     }
     void tick()
     const id = window.setInterval(tick, 15_000)
+    // Claude health is slow-moving — probe once per mount.
+    void api
+      .get<ClaudeHealth>('/api/health/claude')
+      .then((res) => {
+        if (!cancelled) setClaude(res)
+      })
+      .catch(() => {
+        /* endpoint unavailable — banner stays hidden */
+      })
     return () => {
       cancelled = true
       window.clearInterval(id)
     }
   }, [api, setHealth])
+
+  const claudeWarning =
+    claude && (!claude.installed || claude.authenticated === false)
+      ? !claude.installed
+        ? 'Claude Code CLI is not installed on the conductor host — sessions cannot run. See docs/DEPLOYMENT.md.'
+        : `Claude Code is installed but not authenticated (no credentials under ${claude.configDir}). Run \`claude /login\` on the conductor host.`
+      : null
 
   return (
     <div className="flex h-full bg-navy-900 text-navy-100">
@@ -76,6 +101,11 @@ export function Layout() {
           </div>
           <StatusIndicator health={health} />
         </header>
+        {claudeWarning ? (
+          <div className="border-b border-warning/40 bg-warning/10 px-6 py-2 text-sm text-warning">
+            {claudeWarning}
+          </div>
+        ) : null}
         <main className="flex-1 overflow-y-auto px-6 py-8">
           <Outlet />
         </main>

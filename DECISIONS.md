@@ -440,4 +440,20 @@ The chain stops when:
 
 ---
 
+## ADR-025: Claude Code baked into the image, OAuth persisted on the volume
+
+**Date**: 2026-05-18
+**Decision**: The runtime Docker image installs `@anthropic-ai/claude-code` globally and sets `CLAUDE_CONFIG_DIR=/data/claude`, so OAuth credentials live on the persistent volume and survive redeploys. Bootstrap is a one-time interactive step on the deploy host (`railway shell` → `claude /login`). A new `GET /api/health/claude` endpoint reports `{installed, version, authenticated, credentialsAt, configDir}`, and the dashboard shows a warning banner when the CLI is missing or unauthenticated.
+
+**Reasoning**: ADR-001 committed to the subscription-backed CLI rather than API keys. The open question was where the CLI lives for a hosted deploy. Baking it into the image with volume-persisted config keeps ADR-001 intact: same auth model, same invocation pattern (ADR-011), zero code changes in the worker. The alternative — `ANTHROPIC_API_KEY` — would change billing (pay-per-token), require a claude-runner refactor, and contradict ADR-001 for no operational gain.
+
+**Known risks**:
+- OAuth token rotation/expiry requires re-running the bootstrap. The health endpoint + dashboard banner make this visible before sessions start failing silently.
+- `authenticated` detection reads the credentials file under `CLAUDE_CONFIG_DIR`; on macOS the token lives in the Keychain, so the endpoint reports `null` ("unknown") there rather than a false negative.
+- If Railway's interactive shell access regresses, the fallback is a plain VPS (documented in DEPLOYMENT.md) — the image works identically anywhere Docker runs.
+
+**Subscription note**: heavy multi-project automation can hit Pro/Max weekly caps. The existing throttles (`maxSessionsPerDay`, cost-throttle skip rule, opt-in `continueUntilBudget`) are the mitigations; the health endpoint is the observability hook.
+
+---
+
 *Add new decisions above this line. Keep them numbered sequentially.*
