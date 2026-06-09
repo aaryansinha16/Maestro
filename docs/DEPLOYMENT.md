@@ -55,10 +55,12 @@ curl https://maestro.<your-domain>/api/health
 # → { "status": "ok", "version": "0.0.0", "uptimeSeconds": 8, ... }
 ```
 
-The dashboard is served as a static build alongside the conductor in
-production. In Phase 0 the static assets are built but not yet wired into
-the Hono app (Phase 3 mounts them); for now, run the dashboard locally
-against the deployed conductor by exporting `VITE_API_BASE_URL`.
+The dashboard is served by the conductor itself (Phase 5): every
+non-`/api` GET serves the vite build with an index.html SPA fallback.
+The Docker image bakes the build at `/app/dashboard`; outside Docker the
+conductor looks for `MAESTRO_DASHBOARD_DIR`, then the repo-relative
+`packages/dashboard/dist`. Opening `https://maestro.<your-domain>/`
+should render the Overview page with no separate dashboard process.
 
 ## Updating
 
