@@ -62,6 +62,34 @@ conductor looks for `MAESTRO_DASHBOARD_DIR`, then the repo-relative
 `packages/dashboard/dist`. Opening `https://maestro.<your-domain>/`
 should render the Overview page with no separate dashboard process.
 
+## Claude Code bootstrap (one-time per deploy host)
+
+The image ships the Claude Code CLI with `CLAUDE_CONFIG_DIR=/data/claude`,
+so OAuth credentials persist on the volume across redeploys (ADR-025).
+After the **first** deploy (and again only if the token ever expires):
+
+```bash
+railway shell           # opens a shell inside the running service
+claude /login           # follow the OAuth URL, paste the code back
+claude --version        # sanity check
+exit
+```
+
+Verify from outside:
+
+```bash
+curl https://maestro.<your-domain>/api/health/claude
+# → { "installed": true, "version": "…", "authenticated": true, … }
+```
+
+The dashboard shows a yellow banner whenever this endpoint reports the
+CLI missing or unauthenticated — if you see it, re-run the bootstrap.
+
+**Fallback — plain VPS.** If interactive shell access on Railway breaks,
+the same image runs anywhere Docker does (DigitalOcean, Hetzner, a home
+server): `docker run -v maestro-data:/data -p 3000:3000 <image>`, then
+`docker exec -it <container> claude /login`.
+
 ## Updating
 
 ```bash

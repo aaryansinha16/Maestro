@@ -180,6 +180,45 @@ export function buildServer(deps: ServerDeps): Hono {
     )
   })
 
+  // Phase 5 / Sub 5.5: Claude CLI health. Surfaces "is the agent runtime
+  // actually usable on this host" — the gating question for any deploy.
+  // `authenticated` is best-effort: a credentials file under
+  // CLAUDE_CONFIG_DIR (Linux/Docker) is checkable; the macOS keychain is
+  // not, so we report null ("unknown") rather than guessing.
+  app.get('/api/health/claude', async (c) => {
+    const { execa } = await import('execa')
+    const claudeBin = process.env['MAESTRO_CLAUDE_BIN'] ?? 'claude'
+    const probe = await execa(claudeBin, ['--version'], {
+      reject: false,
+      timeout: 3000,
+    })
+    const installed = probe.exitCode === 0
+    const version = installed ? (probe.stdout ?? '').trim() || null : null
+
+    const configDir =
+      process.env['CLAUDE_CONFIG_DIR'] ??
+      join(process.env['HOME'] ?? '/root', '.claude')
+    let credentialsAt: string | null = null
+    let authenticated: boolean | null = null
+    try {
+      const info = await stat(join(configDir, '.credentials.json'))
+      credentialsAt = info.mtime.toISOString()
+      authenticated = true
+    } catch {
+      // No file ⇒ on Linux/Docker that means not logged in; on macOS the
+      // keychain holds the OAuth token, so absence proves nothing.
+      authenticated = process.platform === 'darwin' ? null : installed ? false : null
+    }
+
+    return c.json({
+      installed,
+      version,
+      authenticated,
+      credentialsAt,
+      configDir,
+    })
+  })
+
   app.get('/api/health', (c) => {
     const body = HealthResponseSchema.parse({
       status: 'ok',

@@ -5,10 +5,12 @@
 # conductor needs at runtime. The image runs the conductor + serves the static
 # dashboard from the Hono app's working tree.
 #
-# git is installed because future phases run `simple-git` against managed
-# project repos. The Claude Code CLI is intentionally NOT baked into this
-# image — it must be installed and OAuth'd interactively on the host, per
-# ADR-001.
+# git is installed because the conductor runs `simple-git` against managed
+# project repos. The Claude Code CLI IS baked into the runtime image
+# (ADR-025): OAuth credentials persist on the /data volume via
+# CLAUDE_CONFIG_DIR, so a one-time `railway shell` → `claude /login`
+# bootstrap survives redeploys. ADR-001 (subscription via CLI, not API)
+# still holds — only the install location moved.
 
 # ─── builder ─────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS builder
@@ -48,13 +50,18 @@ FROM node:22-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
     MAESTRO_PORT=3000 \
-    MAESTRO_DATA_DIR=/data
+    MAESTRO_DATA_DIR=/data \
+    CLAUDE_CONFIG_DIR=/data/claude
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git tini \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 1001 maestro \
   && useradd  --system --uid 1001 --gid maestro --create-home maestro
+
+# Claude Code CLI (ADR-025). Version-pinned implicitly by image build
+# date; `claude --version` is surfaced at /api/health/claude.
+RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 
@@ -71,4 +78,5 @@ EXPOSE 3000
 VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "/app/conductor/dist/index.js"]
+# mkdir at start, not build: the /data volume mount shadows image-time dirs.
+CMD ["/bin/sh", "-c", "mkdir -p \"$CLAUDE_CONFIG_DIR\" && exec node /app/conductor/dist/index.js"]
