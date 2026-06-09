@@ -12,6 +12,7 @@ import {
   ScheduledRunSchema,
   PrFeedbackSchema,
   SessionTurnSchema,
+  BriefingSchema,
   type Project,
   type ProjectAutonomyConfig,
   type Session,
@@ -28,6 +29,7 @@ import {
   type ScheduleSkipReason,
   type PrFeedback,
   type SessionTurn,
+  type Briefing,
   type SessionTurnStatus,
   MaestroError,
 } from '@maestro/shared'
@@ -767,6 +769,61 @@ function rowToScheduledRun(row: ScheduledRunRow): ScheduledRun {
     skipReason: row.skip_reason,
     jobId: row.job_id,
     notes: row.notes,
+  })
+}
+
+// ─── Phase 5: briefings ──────────────────────────────────────────────
+
+interface BriefingRow {
+  id: string
+  sent_at: string
+  content: string
+  tg_message_id: string | null
+}
+
+export class BriefingRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  insert(input: { id: string; content: string; tgMessageId?: string | null }): Briefing {
+    this.db
+      .prepare(
+        `INSERT INTO briefings (id, content, tg_message_id) VALUES (?, ?, ?)`,
+      )
+      .run(input.id, input.content, input.tgMessageId ?? null)
+    const row = this.db
+      .prepare<[string], BriefingRow>('SELECT * FROM briefings WHERE id = ?')
+      .get(input.id)
+    if (!row) throw new MaestroError('INTERNAL_ERROR', { message: 'briefing insert lost' })
+    return rowToBriefing(row)
+  }
+
+  /**
+   * True when a briefing was already sent on the given UTC calendar day
+   * ('YYYY-MM-DD'). The daily cron uses this to dedupe across restarts.
+   */
+  existsForUtcDay(day: string): boolean {
+    const row = this.db
+      .prepare<[string], { c: number }>(
+        `SELECT COUNT(*) AS c FROM briefings WHERE substr(sent_at, 1, 10) = ?`,
+      )
+      .get(day)
+    return (row?.c ?? 0) > 0
+  }
+
+  latest(): Briefing | null {
+    const row = this.db
+      .prepare<[], BriefingRow>('SELECT * FROM briefings ORDER BY sent_at DESC LIMIT 1')
+      .get()
+    return row ? rowToBriefing(row) : null
+  }
+}
+
+function rowToBriefing(row: BriefingRow): Briefing {
+  return BriefingSchema.parse({
+    id: row.id,
+    sentAt: row.sent_at,
+    content: row.content,
+    tgMessageId: row.tg_message_id,
   })
 }
 

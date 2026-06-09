@@ -29,6 +29,7 @@ import {
 } from './cli/scheduling.js'
 import { runFeedback } from './cli/feedback.js'
 import { runBackup } from './cli/backup.js'
+import { runBriefingPreview, runBriefingSend } from './cli/briefing.js'
 import { failWith, loadEnvFromRepoRoot } from './cli/util.js'
 
 loadEnvFromRepoRoot()
@@ -239,6 +240,19 @@ cli
   .command('backup', 'Snapshot the SQLite database now and prune old backups')
   .action(async () => {
     await runBackup()
+  })
+
+cli
+  .command('briefing preview', "Print today's briefing without sending or recording it")
+  .action(async () => {
+    await runBriefingPreview()
+  })
+
+cli
+  .command('briefing send', "Generate today's briefing and deliver it via Telegram")
+  .option('--force', 'Send even if a briefing already went out today')
+  .action(async (opts: { force?: boolean }) => {
+    await runBriefingSend({ force: opts.force ?? false })
   })
 
 cli.help()

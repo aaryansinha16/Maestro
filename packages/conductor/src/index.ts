@@ -84,7 +84,7 @@ async function main(): Promise<void> {
     config,
     queue,
   })
-  startBriefing({ db: dbHandle.db, config })
+  const briefing = startBriefing({ db: dbHandle.db, config })
 
   // Phase 5 / Sub 5.3: daily backups + session-log GC at 04:00 UTC.
   const { startHousekeeping } = await import('./backup.js')
@@ -125,6 +125,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'shutting down')
     void (async () => {
       housekeeping.stop()
+      briefing.stop()
       await scheduler.stop().catch((err) => logger.error({ err }, 'scheduler stop failed'))
       await queue.stop().catch((err) => logger.error({ err }, 'queue stop failed'))
       server.close(() => {
