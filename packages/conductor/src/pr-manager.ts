@@ -31,7 +31,52 @@ export interface GitHubClient {
    * newer than this value when provided.
    */
   listPullRequestComments(input: ListPullRequestCommentsInput): Promise<PullRequestComment[]>
+  // ── Phase 4.5 / Sub 4.5.4: repo scaffolding (init-via-dashboard) ──
+  /** Default branch + repo metadata for the onboarding probe. */
+  getRepoInfo(repo: RepoCoords): Promise<RepoInfo>
+  /**
+   * Fetch a single file's decoded contents at an optional ref. Returns
+   * null when the path doesn't exist (404) or isn't a regular file.
+   */
+  getFileContent(input: GetFileContentInput): Promise<string | null>
+  /**
+   * Create `refs/heads/<branchName>` from the tip of `fromBranch`.
+   * Idempotent: if the branch already exists, resolves to its current sha.
+   */
+  createBranch(input: CreateBranchInput): Promise<{ sha: string }>
+  /**
+   * Create or update one file on a branch via the contents API. Looks up
+   * the existing blob sha automatically so updates don't 409.
+   */
+  commitFile(input: CommitFileInput): Promise<{ commitSha: string }>
   verifyScopes(): Promise<void>
+}
+
+export interface RepoInfo {
+  defaultBranch: string
+  description: string | null
+  private: boolean
+}
+
+export interface GetFileContentInput {
+  repo: RepoCoords
+  path: string
+  /** Branch, tag, or sha. Defaults to the repo's default branch. */
+  ref?: string
+}
+
+export interface CreateBranchInput {
+  repo: RepoCoords
+  branchName: string
+  fromBranch: string
+}
+
+export interface CommitFileInput {
+  repo: RepoCoords
+  branch: string
+  path: string
+  content: string
+  message: string
 }
 
 export interface RepoCoords {
@@ -241,6 +286,102 @@ export function createGitHubClient(input: CreateGitHubClientInput): GitHubClient
       return [...issueComments, ...reviewComments]
         .filter((c) => c.body.trim().length > 0)
         .sort((a, b) => a.postedAt.localeCompare(b.postedAt))
+    },
+
+    async getRepoInfo(repo) {
+      return runWithRetry(async () => {
+        const { data } = await octokit.repos.get({
+          owner: repo.owner,
+          repo: repo.repo,
+        })
+        return {
+          defaultBranch: data.default_branch,
+          description: data.description ?? null,
+          private: data.private,
+        }
+      }, 'getRepoInfo')
+    },
+
+    async getFileContent(req) {
+      try {
+        const { data } = await octokit.repos.getContent({
+          owner: req.repo.owner,
+          repo: req.repo.repo,
+          path: req.path,
+          ...(req.ref ? { ref: req.ref } : {}),
+        })
+        if (Array.isArray(data) || data.type !== 'file' || !('content' in data)) {
+          return null
+        }
+        return Buffer.from(data.content, 'base64').toString('utf-8')
+      } catch (err) {
+        if ((err as { status?: number }).status === 404) return null
+        throw err
+      }
+    },
+
+    async createBranch(req) {
+      return runWithRetry(async () => {
+        const { data: baseRef } = await octokit.git.getRef({
+          owner: req.repo.owner,
+          repo: req.repo.repo,
+          ref: `heads/${req.fromBranch}`,
+        })
+        try {
+          await octokit.git.createRef({
+            owner: req.repo.owner,
+            repo: req.repo.repo,
+            ref: `refs/heads/${req.branchName}`,
+            sha: baseRef.object.sha,
+          })
+          return { sha: baseRef.object.sha }
+        } catch (err) {
+          // 422 "Reference already exists" — idempotent re-run (e.g. a
+          // retried init). Resolve the existing branch tip instead.
+          if ((err as { status?: number }).status === 422) {
+            const { data: existing } = await octokit.git.getRef({
+              owner: req.repo.owner,
+              repo: req.repo.repo,
+              ref: `heads/${req.branchName}`,
+            })
+            logger.info(
+              { branch: req.branchName },
+              'createBranch: branch already exists — reusing',
+            )
+            return { sha: existing.object.sha }
+          }
+          throw err
+        }
+      }, 'createBranch')
+    },
+
+    async commitFile(req) {
+      return runWithRetry(async () => {
+        // The contents API requires the current blob sha when updating an
+        // existing file; omit it for creates.
+        let existingSha: string | undefined
+        try {
+          const { data } = await octokit.repos.getContent({
+            owner: req.repo.owner,
+            repo: req.repo.repo,
+            path: req.path,
+            ref: req.branch,
+          })
+          if (!Array.isArray(data) && data.type === 'file') existingSha = data.sha
+        } catch (err) {
+          if ((err as { status?: number }).status !== 404) throw err
+        }
+        const { data } = await octokit.repos.createOrUpdateFileContents({
+          owner: req.repo.owner,
+          repo: req.repo.repo,
+          path: req.path,
+          branch: req.branch,
+          message: req.message,
+          content: Buffer.from(req.content, 'utf-8').toString('base64'),
+          ...(existingSha ? { sha: existingSha } : {}),
+        })
+        return { commitSha: data.commit.sha ?? '' }
+      }, 'commitFile')
     },
 
     async verifyScopes() {

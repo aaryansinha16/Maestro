@@ -16,13 +16,19 @@ import { createReadStream } from 'node:fs'
 import {
   CostAggregationsResponseSchema,
   GetProjectFeedbackResponseSchema,
+  GithubProbeQuerySchema,
+  GithubProbeResponseSchema,
   HealthResponseSchema,
+  InitProjectBodySchema,
+  InitProjectResponseSchema,
   ListProjectsResponseSchema,
   ListScheduleResponseSchema,
   ListSessionsResponseSchema,
   ListSkipsResponseSchema,
   PauseProjectBodySchema,
   QueueResponseSchema,
+  RegisterProjectBodySchema,
+  RegisterProjectResponseSchema,
   UpdateAutonomyBodySchema,
   UpdateScheduleBodySchema,
 } from '@maestro/api'
@@ -40,6 +46,20 @@ import { execa } from 'execa'
 import { logger } from './logger.js'
 import { listRecentJournal, readMaestroDir } from './state-manager.js'
 import { workingDirFor, parseNeverTouchSection } from './worker.js'
+import {
+  createGitHubClient,
+  parseRepoUrl,
+  type GitHubClient,
+} from './pr-manager.js'
+import {
+  buildMaestroFiles,
+  renderContextMd,
+  renderStateMd,
+  seedFromPackageJson,
+  type ContextSeed,
+} from './project-init.js'
+import { scaffoldOnGitHub } from './github-scaffolder.js'
+import { registerProject } from './project-register.js'
 import { computeNextCronRun } from './cron-utils.js'
 import type { JobQueue } from './job-queue.js'
 import type { Scheduler } from './scheduler.js'
@@ -72,6 +92,14 @@ export interface ServerDeps {
   scheduler?: Scheduler
   /** Optional cron timezone for next-run computation. Defaults to UTC. */
   schedulerTimezone?: string
+  /**
+   * Phase 4.5 / Sub 4.5.4: GitHub access for the onboarding endpoints
+   * (probe / init / register). Tests inject `githubClient`; production
+   * passes `githubToken` and the server constructs the client lazily.
+   * When neither is present those endpoints return 503.
+   */
+  githubToken?: string
+  githubClient?: GitHubClient
 }
 
 export function buildServer(deps: ServerDeps): Hono {
@@ -82,6 +110,33 @@ export function buildServer(deps: ServerDeps): Hono {
   const costs = new CostRepository(deps.db)
   const scheduledRuns = new ScheduledRunsRepository(deps.db)
   const feedback = new PrFeedbackRepository(deps.db)
+
+  // Phase 4.5 / Sub 4.5.4: GitHub access for onboarding endpoints.
+  // Lazily constructed so tests can inject a fake and production only
+  // builds an Octokit when the first onboarding request arrives.
+  let githubClientMemo: GitHubClient | null | undefined
+  const resolveGithub = (): GitHubClient | null => {
+    if (githubClientMemo !== undefined) return githubClientMemo
+    githubClientMemo =
+      deps.githubClient ??
+      (deps.githubToken ? createGitHubClient({ token: deps.githubToken }) : null)
+    return githubClientMemo
+  }
+  const githubUnavailable = (c: Context) =>
+    c.json(
+      {
+        error: {
+          code: 'GITHUB_UNAVAILABLE',
+          message: 'GITHUB_TOKEN not configured on the conductor',
+        },
+      },
+      503,
+    )
+
+  // 60-second probe cache by repoUrl — the wizard re-renders its preview
+  // on every step transition and shouldn't burn GitHub rate limit doing it.
+  const probeCache = new Map<string, { at: number; body: unknown }>()
+  const PROBE_CACHE_TTL_MS = 60_000
 
   app.use('*', honoLogger((msg) => logger.debug(msg)))
   app.use('/api/*', cors({ origin: '*' }))
@@ -376,6 +431,126 @@ export function buildServer(deps: ServerDeps): Hono {
     projects.updateAutonomyConfig(slug, merged)
     deps.scheduler?.reconcileNow()
     return c.json({ ok: true })
+  })
+
+  app.get('/api/github/probe', async (c) => {
+    const query = GithubProbeQuerySchema.parse({ repoUrl: c.req.query('repoUrl') })
+    const cached = probeCache.get(query.repoUrl)
+    if (cached && Date.now() - cached.at < PROBE_CACHE_TTL_MS) {
+      return c.json(cached.body as Record<string, unknown>)
+    }
+    const gh = resolveGithub()
+    if (!gh) return githubUnavailable(c)
+    const repo = parseRepoUrl(query.repoUrl)
+
+    const info = await gh.getRepoInfo(repo)
+    const [pkgJson, readme, maestroState] = await Promise.all([
+      gh.getFileContent({ repo, path: 'package.json', ref: info.defaultBranch }),
+      gh.getFileContent({ repo, path: 'README.md', ref: info.defaultBranch }),
+      gh.getFileContent({ repo, path: '.maestro/state.md', ref: info.defaultBranch }),
+    ])
+
+    let seed: ContextSeed = { projectName: repo.repo }
+    if (pkgJson) {
+      seed = seedFromPackageJson(pkgJson, repo.repo) ?? seed
+    } else {
+      seed.stackNote = 'Stack not detected from package.json — describe it here.'
+    }
+    if (info.description && !seed.description) seed.description = info.description
+    if (readme) {
+      const excerpt = readme.split('\n').slice(0, 30).join('\n').trim()
+      if (excerpt.length > 0) seed.readmeExcerpt = excerpt
+    }
+
+    const body = GithubProbeResponseSchema.parse({
+      repoUrl: query.repoUrl,
+      projectName: seed.projectName,
+      defaultBranch: info.defaultBranch,
+      description: info.description,
+      hasMaestroDir: maestroState !== null,
+      suggestedContext: renderContextMd(seed),
+    })
+    probeCache.set(query.repoUrl, { at: Date.now(), body })
+    return c.json(body)
+  })
+
+  app.post('/api/projects/init', async (c) => {
+    const raw = (await c.req.json().catch(() => ({}))) as unknown
+    const body = InitProjectBodySchema.parse(raw)
+    const gh = resolveGithub()
+    if (!gh) return githubUnavailable(c)
+    const repo = parseRepoUrl(body.repoUrl)
+
+    const info = await gh.getRepoInfo(repo)
+
+    // Render context: caller-supplied (wizard's edited preview) or a
+    // fresh probe-derived seed.
+    let context = body.context
+    if (!context) {
+      const pkgJson = await gh.getFileContent({
+        repo,
+        path: 'package.json',
+        ref: info.defaultBranch,
+      })
+      const seed: ContextSeed = pkgJson
+        ? (seedFromPackageJson(pkgJson, repo.repo) ?? { projectName: repo.repo })
+        : { projectName: repo.repo, stackNote: 'Describe the stack here.' }
+      context = renderContextMd(seed)
+    }
+
+    const files = buildMaestroFiles({
+      state: renderStateMd({ focus: body.focus, tasks: body.tasks }),
+      context,
+      autonomy: body.autonomy,
+    })
+
+    const result = await scaffoldOnGitHub({
+      client: gh,
+      repo,
+      files,
+      branchName: 'maestro/init',
+      baseBranch: info.defaultBranch,
+      prTitle: 'chore: maestro init',
+      prBody: [
+        'Adds the `.maestro/` directory so Maestro can manage this project.',
+        '',
+        '- `state.md` — current focus + next concrete tasks',
+        '- `context.md` — durable project context the agent reads every session',
+        '- `decisions.md` — decision log',
+        '- `autonomy.json` — schedule, time budget, quality gates, autonomy level',
+        '',
+        'Generated by the Maestro dashboard onboarding wizard. Merge, then',
+        'register the project from the dashboard to start running sessions.',
+      ].join('\n'),
+      openAsPR: body.openAsPR,
+      prLabels: body.autonomy.github.prLabels,
+    })
+
+    const responseBody = InitProjectResponseSchema.parse({
+      branch: result.branch,
+      prUrl: result.prUrl,
+      prNumber: result.prNumber,
+    })
+    return c.json(responseBody)
+  })
+
+  app.post('/api/projects/register', async (c) => {
+    const raw = (await c.req.json().catch(() => ({}))) as unknown
+    const body = RegisterProjectBodySchema.parse(raw)
+    try {
+      const project = await registerProject({ db: deps.db, repoUrl: body.repoUrl })
+      deps.scheduler?.reconcileNow()
+      const responseBody = RegisterProjectResponseSchema.parse({ project })
+      return c.json(responseBody)
+    } catch (err) {
+      if (isMaestroError(err) && /already registered/.test(err.message)) {
+        return c.json(
+          { error: { code: 'ALREADY_REGISTERED', message: err.message } },
+          409,
+        )
+      }
+      throw err
+    }
   })
 
   app.post('/api/projects/:slug/autonomy', async (c) => {

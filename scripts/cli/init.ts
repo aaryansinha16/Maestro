@@ -6,12 +6,10 @@
 // settings, then writes the `.maestro/` skeleton.
 
 import { existsSync } from 'node:fs'
-import { readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import prompts from 'prompts'
 import simpleGit from 'simple-git'
 import {
-  AutonomyFileSchema,
   DEFAULT_AUTONOMY_CONFIG,
   DEFAULT_QUALITY_GATES,
   DEFAULT_TIME_BUDGET_SECONDS,
@@ -19,7 +17,14 @@ import {
   QUALITY_GATE_NAMES,
   type ProjectAutonomyConfig,
 } from '@maestro/shared'
-import { initMaestroDir, scaffoldContextMd } from '@maestro/conductor'
+import {
+  buildAutonomyFromAnswers,
+  initMaestroDir,
+  renderStateMd,
+  scaffoldContextMd,
+  scrapeContextFromDisk,
+  type AutonomyAnswers,
+} from '@maestro/conductor'
 import { failWith, info, ok, warn } from './util.js'
 
 export interface InitOptions {
@@ -48,7 +53,7 @@ export async function runInit(rawPath: string, options: InitOptions = {}): Promi
 
   await ensureCleanGitRepo(projectRoot, options.force ?? false)
 
-  const seed = await scrapeContext(projectRoot)
+  const seed = await scrapeContextFromDisk(projectRoot)
   const responses = options.nonInteractive
     ? buildNonInteractiveResponses(options)
     : await askInteractive(seed.name)
@@ -56,7 +61,7 @@ export async function runInit(rawPath: string, options: InitOptions = {}): Promi
     focus: responses.focus,
     tasks: responses.tasks,
   })
-  const autonomy = buildAutonomy(responses)
+  const autonomy = buildAutonomyFromAnswers(responses)
 
   let contextMd = seed.contextMd
   if (options.scaffoldContext) {
@@ -113,138 +118,16 @@ async function ensureCleanGitRepo(projectRoot: string, force: boolean): Promise<
   }
 }
 
-// ─── Context scraping ────────────────────────────────────────────────
-
-interface SeededContext {
-  name: string
-  contextMd: string
-}
-
-async function scrapeContext(projectRoot: string): Promise<SeededContext> {
-  const lines: string[] = []
-  let projectName = projectRoot.split('/').slice(-1)[0] ?? 'project'
-
-  const pkgPath = `${projectRoot}/package.json`
-  if (existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(await readFile(pkgPath, 'utf-8')) as {
-        name?: string
-        description?: string
-        scripts?: Record<string, string>
-        dependencies?: Record<string, string>
-        devDependencies?: Record<string, string>
-      }
-      if (pkg.name) projectName = pkg.name
-      lines.push(`# Project Context — ${projectName}`)
-      lines.push('')
-      lines.push('## Stack')
-      lines.push('')
-      lines.push('Detected from package.json. Update freely.')
-      if (pkg.description) {
-        lines.push('')
-        lines.push(`> ${pkg.description}`)
-      }
-      if (pkg.scripts) {
-        lines.push('')
-        lines.push('### Scripts')
-        lines.push('')
-        for (const [name, value] of Object.entries(pkg.scripts)) {
-          lines.push(`- \`${name}\`: \`${value}\``)
-        }
-      }
-      const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies })
-        .filter((d) => !d.startsWith('@types/'))
-        .slice(0, 12)
-      if (deps.length > 0) {
-        lines.push('')
-        lines.push('### Notable dependencies')
-        lines.push('')
-        lines.push(deps.map((d) => `- ${d}`).join('\n'))
-      }
-    } catch {
-      lines.push(`# Project Context — ${projectName}`)
-    }
-  } else if (existsSync(`${projectRoot}/pyproject.toml`)) {
-    lines.push(`# Project Context — ${projectName}`)
-    lines.push('')
-    lines.push('## Stack')
-    lines.push('')
-    lines.push('Python project (pyproject.toml). Fill in framework, deps, etc.')
-  } else if (existsSync(`${projectRoot}/Cargo.toml`)) {
-    lines.push(`# Project Context — ${projectName}`)
-    lines.push('')
-    lines.push('## Stack')
-    lines.push('')
-    lines.push('Rust project (Cargo.toml).')
-  } else {
-    lines.push(`# Project Context — ${projectName}`)
-    lines.push('')
-    lines.push('## Stack')
-    lines.push('')
-    lines.push('Unrecognised project layout. Describe it here.')
-  }
-
-  // Top-level layout
-  try {
-    const entries = (await readdir(projectRoot, { withFileTypes: true }))
-      .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
-      .slice(0, 20)
-    if (entries.length > 0) {
-      lines.push('')
-      lines.push('## Top-level layout')
-      lines.push('')
-      lines.push(
-        entries.map((e) => `- \`${e.name}${e.isDirectory() ? '/' : ''}\``).join('\n'),
-      )
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // README excerpt
-  for (const candidate of ['README.md', 'README', 'Readme.md']) {
-    const p = `${projectRoot}/${candidate}`
-    if (existsSync(p)) {
-      try {
-        const body = await readFile(p, 'utf-8')
-        const excerpt = body.split('\n').slice(0, 30).join('\n').trim()
-        if (excerpt.length > 0) {
-          lines.push('')
-          lines.push('## README excerpt')
-          lines.push('')
-          lines.push(excerpt)
-        }
-      } catch {
-        /* ignore */
-      }
-      break
-    }
-  }
-
-  lines.push('')
-  lines.push('## Conventions')
-  lines.push('')
-  lines.push('- Code style: _fill in_')
-  lines.push('- Commit format: _fill in_')
-  lines.push('- Test patterns: _fill in_')
-  lines.push('')
-  lines.push('## Project-specific NEVER list')
-  lines.push('')
-  lines.push('_Add anything the agent must not touch without explicit state.md instruction._')
-
-  return { name: projectName, contextMd: lines.join('\n') + '\n' }
-}
-
 // ─── Interactive prompts ─────────────────────────────────────────────
 
-interface Responses {
+// The rendering/composition logic (scrapeContextFromDisk, renderStateMd,
+// buildAutonomyFromAnswers) moved to @maestro/conductor's project-init.ts
+// in Phase 4.5 so the dashboard onboarding wizard shares it. This file
+// keeps only the prompt UX.
+
+interface Responses extends AutonomyAnswers {
   focus: string
   tasks: string[]
-  level: ProjectAutonomyConfig['level']
-  schedule: string
-  timeBudgetMinutes: number
-  qualityGates: ProjectAutonomyConfig['qualityGates']
-  branchPrefix: string
 }
 
 async function askInteractive(suggestedName: string): Promise<Responses> {
@@ -346,52 +229,3 @@ function buildNonInteractiveResponses(o: InitOptions): Responses {
   }
 }
 
-// ─── Composition ─────────────────────────────────────────────────────
-
-function renderStateMd(args: { focus: string; tasks: string[] }): string {
-  const taskLines =
-    args.tasks.length > 0
-      ? args.tasks.map((t) => `- [ ] ${t}`).join('\n')
-      : '- [ ] _add 3-5 concrete tasks here_'
-  return [
-    '# Current State',
-    '',
-    '## Focus',
-    args.focus.trim(),
-    '',
-    '## Next Concrete Tasks',
-    taskLines,
-    '',
-    '## Blockers',
-    '',
-    '_(none)_',
-    '',
-    '## Recent Context',
-    '',
-    'Project initialised by `maestro init`. The first session is for orientation only.',
-    '',
-    '## Notes',
-    '',
-    '',
-  ].join('\n')
-}
-
-function buildAutonomy(r: Responses): ProjectAutonomyConfig {
-  const draft = {
-    level: r.level,
-    schedule: r.schedule,
-    timeBudget: Math.round(r.timeBudgetMinutes * 60),
-    qualityGates: r.qualityGates,
-    branches: {
-      base: 'main',
-      prefix: r.branchPrefix.endsWith('/') ? r.branchPrefix : `${r.branchPrefix}/`,
-    },
-    github: {
-      prLabels: ['maestro'],
-      draftByDefault: r.level === 'draft-only',
-    },
-    skipDays: [],
-    maxSessionsPerDay: 6,
-  }
-  return AutonomyFileSchema.parse(draft)
-}

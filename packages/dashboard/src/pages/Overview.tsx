@@ -31,13 +31,21 @@ export function Overview() {
 
   return (
     <section className="mx-auto max-w-6xl space-y-8">
-      <header>
-        <p className="text-xs uppercase tracking-[0.2em] text-amber-500">Projects</p>
-        <h2 className="mt-1 text-2xl font-semibold text-white">Overview</h2>
-        <p className="mt-1 text-sm text-navy-300">
-          All projects under Maestro management. Each card surfaces current autonomy and
-          recent activity.
-        </p>
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-amber-500">Projects</p>
+          <h2 className="mt-1 text-2xl font-semibold text-white">Overview</h2>
+          <p className="mt-1 text-sm text-navy-300">
+            All projects under Maestro management. Each card surfaces current autonomy and
+            recent activity.
+          </p>
+        </div>
+        <Link
+          to="/add-project"
+          className="rounded border border-amber-400/60 bg-amber-400/10 px-4 py-1.5 text-sm font-medium text-amber-200 transition hover:bg-amber-400/20"
+        >
+          + Add project
+        </Link>
       </header>
 
       {error ? <ErrorCard message={error} /> : null}
