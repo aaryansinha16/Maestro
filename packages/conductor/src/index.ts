@@ -98,6 +98,9 @@ async function main(): Promise<void> {
     schedulerTimezone: process.env['MAESTRO_TZ'] ?? 'UTC',
     ...(config.githubToken ? { githubToken: config.githubToken } : {}),
     ...(dashboardDir ? { dashboardDir } : {}),
+    ...(config.authUser ? { authUser: config.authUser } : {}),
+    ...(config.authPassword ? { authPassword: config.authPassword } : {}),
+    ...(config.corsOrigin ? { corsOrigin: config.corsOrigin } : {}),
   })
 
   const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
