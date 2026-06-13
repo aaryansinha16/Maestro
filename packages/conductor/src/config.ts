@@ -67,7 +67,11 @@ export type Config = z.infer<typeof ConfigSchema>
 
 export function loadConfig(): Config {
   const parsed = ConfigSchema.safeParse({
-    port: process.env.MAESTRO_PORT,
+    // MAESTRO_PORT is the explicit local override; PORT is the platform
+    // convention (Railway/Heroku/etc. assign it and route the healthcheck
+    // + public traffic to it). Preferring MAESTRO_PORT keeps local dev
+    // stable while letting a hosted platform pick the port it routes to.
+    port: process.env.MAESTRO_PORT ?? process.env.PORT,
     dataDir: process.env.MAESTRO_DATA_DIR,
     developerName: process.env.DEVELOPER_NAME,
     developerEmail: process.env.DEVELOPER_EMAIL || undefined,
