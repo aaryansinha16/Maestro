@@ -53,8 +53,10 @@ ENV NODE_ENV=production \
     MAESTRO_DATA_DIR=/data \
     CLAUDE_CONFIG_DIR=/data/claude
 
+# gosu lets the entrypoint drop from root → maestro after fixing volume
+# ownership at runtime (see docker-entrypoint.sh).
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates git tini \
+  && apt-get install -y --no-install-recommends ca-certificates git tini gosu \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 1001 maestro \
   && useradd  --system --uid 1001 --gid maestro --create-home maestro
@@ -71,17 +73,19 @@ COPY --from=builder --chown=maestro:maestro /prod/conductor /app/conductor
 # Dashboard static build, served from inside the conductor process tree.
 COPY --from=builder --chown=maestro:maestro /app/packages/dashboard/dist /app/dashboard
 
-RUN mkdir -p /data && chown maestro:maestro /data
-USER maestro
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh && mkdir -p /data
 
 EXPOSE 3000
 
 # NB: no Docker `VOLUME` instruction — Railway rejects it ("use Railway
-# Volumes"). Persistence at /data is configured via a Railway Volume
-# mounted at that path (see docs/DEPLOYMENT.md), which is what actually
-# survives redeploys. The VOLUME hint would only matter for a plain
-# `docker run` without -v, and there we pass -v explicitly anyway.
-
-ENTRYPOINT ["/usr/bin/tini", "--"]
-# mkdir at start, not build: the /data volume mount shadows image-time dirs.
-CMD ["/bin/sh", "-c", "mkdir -p \"$CLAUDE_CONFIG_DIR\" && exec node /app/conductor/dist/index.js"]
+# Volumes"). Persistence at /data comes from a Railway Volume mounted
+# there (docs/DEPLOYMENT.md), or `docker run -v` locally.
+#
+# We deliberately do NOT set `USER maestro`: the entrypoint starts as
+# root to chown the runtime-mounted /data volume, then drops to maestro
+# via gosu before exec'ing node. Net effect — the conductor process runs
+# unprivileged (CLAUDE.md security boundary) while still being able to
+# write the volume Railway hands us root-owned.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+CMD ["node", "/app/conductor/dist/index.js"]
