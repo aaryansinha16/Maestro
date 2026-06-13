@@ -27,26 +27,16 @@ volume, one set of environment variables.
    - `DEVELOPER_NAME=Aaryan Sinha`
    - `DEVELOPER_EMAIL=<your GitHub email>`
    - `DEVELOPER_GITHUB_USERNAME=aaryansinha16`
-   - `MAESTRO_DATA_DIR=/data`
-   - `MAESTRO_PORT=3000`
+   - `MAESTRO_AUTH_USER` + `MAESTRO_AUTH_PASSWORD` (Basic Auth for the
+     dashboard — set both before exposing a public domain)
+   - Do **not** set `MAESTRO_PORT` — Railway assigns `$PORT` and routes its
+     healthcheck to it; the conductor reads `$PORT` when `MAESTRO_PORT` is
+     unset. Hardcoding `MAESTRO_PORT` shadows `$PORT` and the healthcheck
+     fails. `MAESTRO_DATA_DIR=/data` and `CLAUDE_CONFIG_DIR=/data/claude`
+     are already baked into the image.
 5. **Public domain**: enable a domain for the service (Railway → Settings →
-   Public Networking). The Hono server listens on `MAESTRO_PORT`.
+   Public Networking) with target port `3000`.
 6. **Verify**: hit `https://<your-domain>/api/health` and confirm a 200.
-
-## Authenticating the Claude Code CLI
-
-ADR-001 commits Maestro to using the local `claude` CLI rather than the
-Anthropic API. Railway's Docker image deliberately does **not** install
-Claude Code — the OAuth flow needs an interactive shell. Two options:
-
-- **Production**: SSH (or use Railway's "Deploy → Shell") into the running
-  container with the volume mounted, install Claude Code, run `claude
-  /login`, and finish the OAuth flow. Repeat after token expiry.
-- **Self-hosted on a VPS** (recommended for the developer's own use): run
-  `pnpm install && pnpm build` on the VPS directly, install Claude Code,
-  authenticate once, then run the conductor under a process supervisor
-  (systemd, pm2, etc.). The Dockerfile is for parity testing and future
-  multi-tenant deploys.
 
 ## Verifying a deploy
 
@@ -61,6 +51,25 @@ The Docker image bakes the build at `/app/dashboard`; outside Docker the
 conductor looks for `MAESTRO_DASHBOARD_DIR`, then the repo-relative
 `packages/dashboard/dist`. Opening `https://maestro.<your-domain>/`
 should render the Overview page with no separate dashboard process.
+
+## Git push credentials
+
+The conductor pushes branches over HTTPS. The Docker image ships a
+system-wide git credential helper that feeds `GITHUB_TOKEN` from the
+environment at push time, so no extra setup is needed on Railway — just
+ensure `GITHUB_TOKEN` is set as a service variable.
+
+Running the conductor **outside Docker** (a bare VPS, `pnpm dev`)? The
+host's own git credential setup handles auth — on macOS that's the
+keychain; on Linux, configure a helper once:
+
+```bash
+git config --global credential.helper \
+  '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GITHUB_TOKEN"; }; f'
+```
+
+Without a helper (and without a token-embedded remote), the worker's
+push fails auth and the session is marked failed before a PR opens.
 
 ## Claude Code bootstrap (one-time per deploy host)
 
