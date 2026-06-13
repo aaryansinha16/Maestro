@@ -48,8 +48,11 @@ RUN pnpm --filter @maestro/conductor deploy --legacy --prod /prod/conductor
 # ─── runtime ─────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS runtime
 
+# NB: no MAESTRO_PORT here. Hardcoding it would shadow the platform's
+# $PORT (Railway assigns one and routes the healthcheck + public traffic
+# to it). config.ts reads MAESTRO_PORT ?? PORT ?? default, so leaving it
+# unset lets $PORT win on the host and falls back to 3000 otherwise.
 ENV NODE_ENV=production \
-    MAESTRO_PORT=3000 \
     MAESTRO_DATA_DIR=/data \
     CLAUDE_CONFIG_DIR=/data/claude
 
