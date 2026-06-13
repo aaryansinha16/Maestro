@@ -75,7 +75,12 @@ RUN mkdir -p /data && chown maestro:maestro /data
 USER maestro
 
 EXPOSE 3000
-VOLUME ["/data"]
+
+# NB: no Docker `VOLUME` instruction — Railway rejects it ("use Railway
+# Volumes"). Persistence at /data is configured via a Railway Volume
+# mounted at that path (see docs/DEPLOYMENT.md), which is what actually
+# survives redeploys. The VOLUME hint would only matter for a plain
+# `docker run` without -v, and there we pass -v explicitly anyway.
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 # mkdir at start, not build: the /data volume mount shadows image-time dirs.
