@@ -560,6 +560,12 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
 
   // Step 10: PR creation ----------------------------------------------------------
   const baseBranch = project.autonomyConfig.branches.base
+  // The push authenticates via git's credential layer. On a dev machine
+  // the host's own helper supplies the token (e.g. macOS keychain); in the
+  // Docker image a system-wide credential helper feeds GITHUB_TOKEN from
+  // the environment (see Dockerfile + docs/DEPLOYMENT.md). Without one of
+  // those a headless host's push would fail auth — which is the deploy
+  // gotcha this paths around.
   await git.push(['-u', 'origin', branch])
 
   const githubClient =
