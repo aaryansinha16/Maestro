@@ -146,7 +146,7 @@ The whole session is logged to `MAESTRO_DATA_DIR/logs/sessions/<id>.log`.
 
 ## Features
 
-**Shipped (Phases 0 → 2):**
+**Shipped:**
 
 - Multi-project monorepo with strict TypeScript everywhere
 - `maestro` CLI for project init, add, run, inspect, doctor, gc, pause/resume
@@ -169,6 +169,12 @@ The whole session is logged to `MAESTRO_DATA_DIR/logs/sessions/<id>.log`.
   `/api/schedule`, `/api/trigger`)
 - SQLite migrations system with crash-safe boot recovery
 - Structured logging with Pino, scoped per session
+- PR feedback loop: reviewer comments folded into the next session's prompt
+- Opt-in session continuation until the time budget is exhausted
+- Telegram daily briefings (yesterday's work, PRs, blockers, spend)
+- Docker image + Railway deploy; optional HTTP Basic Auth (fail-closed in prod)
+- Daily SQLite backups + session-log GC; hard per-session spend cap
+- Headless auth via your own `CLAUDE_CODE_OAUTH_TOKEN` (self-hosted, BYO subscription)
 
 **Coming next** — see [Future plans](#future-plans).
 
@@ -474,10 +480,17 @@ morning?" via the briefing or the dashboard.
 
 ## Status
 
-Phase 2 complete (scheduling and parallelism). The single-project execution
-loop is verified end-to-end on a real project. Phase 3 (PR feedback loop,
-session continuation, Telegram briefing, dashboard polish) is the active
-focus — see [Future plans](#future-plans).
+Phases 0–5 are implemented: the full autonomous loop (schedule → skip rules →
+worker → Claude Code → quality gates → PR), PR feedback, session continuation,
+Telegram briefings, cost tracking, daily backups, and a Docker/Railway
+deployment behind optional Basic Auth. A 2026-07 audit
+([`docs/AUDIT_2026-07.md`](./docs/AUDIT_2026-07.md)) drove a round of
+correctness and production-hardening fixes.
+
+The current focus is **real-world validation** — running the loop across several
+projects and hardening from what shows up — plus making Maestro easy to
+**self-host** (each user runs their own instance on their own Claude
+subscription). See [Future plans](#future-plans).
 
 This is a personal project of [@aaryansinha16](https://github.com/aaryansinha16),
 built first for one developer's workflow before generalizing. Feedback,

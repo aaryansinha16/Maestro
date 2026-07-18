@@ -86,8 +86,8 @@ export function Layout() {
           ))}
         </nav>
         <div className="mt-auto pt-6 text-xs text-navy-300">
-          <p>Phase 0 — foundation</p>
-          <p className="mt-1 text-navy-400">v0.0.0</p>
+          <p>Maestro conductor</p>
+          <p className="mt-1 text-navy-400">self-hosted · v0.0.0</p>
         </div>
       </aside>
 
