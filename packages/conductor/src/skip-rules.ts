@@ -251,6 +251,10 @@ void WEEKDAYS // re-exported elsewhere — pin import.
 export function consecutiveFailures(sessions: Session[]): number {
   let count = 0
   for (const s of sessions) {
+    // Fixup turns are sub-turns of their parent's attempt, not independent
+    // outcomes — skip them so a `completed` fixup can't mask its failed
+    // parent (nor a failed fixup double-count the same attempt). ENG-02.
+    if (s.isFixupTurn) continue
     if (sessionFailedForBackoff(s)) count++
     else break
   }

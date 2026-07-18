@@ -27,6 +27,7 @@ import simpleGit, { type SimpleGit } from 'simple-git'
 import {
   CONTINUATION_TURN_OVERHEAD_SECONDS,
   COST_WARN_PER_SESSION_CENTS,
+  DEFAULT_SESSION_BUDGET_USD,
   FIXUP_TURN_BUDGET_SECONDS,
   LOGS_SUBDIR,
   MaestroError,
@@ -411,6 +412,7 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
     timeBudgetSeconds: turnTimeBudget,
     logPath,
     claudeBin: input.claudeBin,
+    maxBudgetUsd: sessionBudgetUsd(),
   })
   logRunResult(runResult)
 
@@ -541,6 +543,7 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
       timeBudgetSeconds: FIXUP_TURN_BUDGET_SECONDS,
       logPath: fixupLogPath,
       claudeBin: input.claudeBin,
+      maxBudgetUsd: sessionBudgetUsd(),
     })
     logRunResult(fixupResult)
     input.sessions.update(fixupSessionId, {
@@ -705,6 +708,20 @@ function workingDirFor(dataDir: string, slug: string): string {
 
 function sessionLogPath(dataDir: string, sessionId: string): string {
   return resolve(dataDir, LOGS_SUBDIR, `${sessionId}.log`)
+}
+
+/**
+ * Hard per-session spend backstop (ENG-03), passed to claude via
+ * --max-budget-usd so a runaway loop can't consume unbounded budget inside
+ * the wall-clock window. Reads MAESTRO_SESSION_BUDGET_USD; a non-positive
+ * value disables the cap. Applied to both the main turn and the fixup turn.
+ */
+function sessionBudgetUsd(): number | undefined {
+  const raw = process.env['MAESTRO_SESSION_BUDGET_USD']
+  if (raw === undefined || raw.trim() === '') return DEFAULT_SESSION_BUDGET_USD
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return DEFAULT_SESSION_BUDGET_USD
+  return n > 0 ? n : undefined
 }
 
 function logRunResult(r: ClaudeRunResult): void {

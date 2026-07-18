@@ -8,7 +8,11 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { openDatabase, type DbHandle } from '../db.js'
 import { ProjectRepository, SessionRepository } from '../repositories.js'
-import { evaluateAutoPause, maybeClearAutoPauseOnManualSuccess } from '../auto-pause.js'
+import {
+  evaluateAutoPause,
+  maybeClearAutoPauseOnManualSuccess,
+  reconcileAutoPauseAfterSession,
+} from '../auto-pause.js'
 import { DEFAULT_AUTONOMY_CONFIG } from '@maestro/shared'
 
 interface Harness {
@@ -67,6 +71,17 @@ function successSession(sessions: SessionRepository, projectId: string): void {
   })
 }
 
+function fixupCompletedSession(sessions: SessionRepository, projectId: string): void {
+  const id = randomUUID()
+  sessions.insert({ id, projectId, promptVersion: '1.1.0', isFixupTurn: true })
+  sessions.update(id, {
+    status: 'completed',
+    endedAt: new Date().toISOString(),
+    prNumber: 77,
+    branchName: 'maestro/p1/fixup',
+  })
+}
+
 describe('evaluateAutoPause', () => {
   it('triggers pause at the threshold of consecutive failures', () => {
     const { projects, sessions, projectId } = setup()
@@ -103,6 +118,16 @@ describe('evaluateAutoPause', () => {
     for (let i = 0; i < 3; i++) failedSession(sessions, projectId)
     const project = projects.findById(projectId)!
     const r = evaluateAutoPause({ projects, sessions, threshold: 3 }, project)
+    expect(r.transitioned).toBe('paused')
+  })
+
+  it('a completed fixup turn does not mask the failed-parent streak (ENG-02)', () => {
+    const { projects, sessions, projectId } = setup()
+    for (let i = 0; i < 5; i++) failedSession(sessions, projectId)
+    // A fixup turn that COMPLETED is the newest row; it must not break the
+    // streak of five failed parents underneath it.
+    fixupCompletedSession(sessions, projectId)
+    const r = evaluateAutoPause({ projects, sessions }, projects.findById(projectId)!)
     expect(r.transitioned).toBe('paused')
   })
 })
@@ -166,5 +191,69 @@ describe('maybeClearAutoPauseOnManualSuccess', () => {
       session,
     )
     expect(cleared).toBe(false)
+  })
+})
+
+describe('reconcileAutoPauseAfterSession', () => {
+  it('clears auto-pause after a successful MANUAL run (ENG-01)', () => {
+    const { projects, sessions, projectId } = setup()
+    projects.setAutoPause('p1', 'auto-paused')
+    const id = randomUUID()
+    sessions.insert({ id, projectId, promptVersion: '1.1.0' })
+    const session = sessions.update(id, {
+      status: 'completed',
+      endedAt: new Date().toISOString(),
+      prNumber: 5,
+      branchName: 'maestro/p1/z',
+    })
+    const r = reconcileAutoPauseAfterSession(
+      { projects, sessions },
+      projects.findById(projectId)!,
+      session,
+      { manual: true },
+    )
+    expect(r.transitioned).toBe('resumed')
+    expect(projects.findById(projectId)!.autoPausedAt).toBeNull()
+  })
+
+  it('does NOT clear on a successful SCHEDULED run', () => {
+    const { projects, sessions, projectId } = setup()
+    projects.setAutoPause('p1', 'auto-paused')
+    const id = randomUUID()
+    sessions.insert({ id, projectId, promptVersion: '1.1.0' })
+    const session = sessions.update(id, {
+      status: 'completed',
+      endedAt: new Date().toISOString(),
+      prNumber: 6,
+      branchName: 'maestro/p1/z',
+    })
+    const r = reconcileAutoPauseAfterSession(
+      { projects, sessions },
+      projects.findById(projectId)!,
+      session,
+      { manual: false },
+    )
+    expect(r.transitioned).toBeNull()
+    expect(projects.findById(projectId)!.autoPausedAt).not.toBeNull()
+  })
+
+  it('a failing manual run does not clear and can pause at threshold', () => {
+    const { projects, sessions, projectId } = setup()
+    for (let i = 0; i < 4; i++) failedSession(sessions, projectId)
+    const id = randomUUID()
+    sessions.insert({ id, projectId, promptVersion: '1.1.0' })
+    const session = sessions.update(id, {
+      status: 'failed',
+      endedAt: new Date().toISOString(),
+      prNumber: null,
+    })
+    const r = reconcileAutoPauseAfterSession(
+      { projects, sessions },
+      projects.findById(projectId)!,
+      session,
+      { manual: true },
+    )
+    expect(r.transitioned).toBe('paused')
+    expect(projects.findById(projectId)!.autoPausedAt).not.toBeNull()
   })
 })

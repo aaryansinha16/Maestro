@@ -15,7 +15,7 @@ import { startBriefing } from './briefing.js'
 import { JobQueue, type JobRunOutcome } from './job-queue.js'
 import { ProjectRepository } from './repositories.js'
 import { runSession } from './worker.js'
-import { evaluateAutoPause } from './auto-pause.js'
+import { reconcileAutoPauseAfterSession } from './auto-pause.js'
 
 const PACKAGE_VERSION = '0.0.0'
 
@@ -52,12 +52,22 @@ async function main(): Promise<void> {
       }
       try {
         const result = await runSession({ db: dbHandle.db, config, project })
-        // After every session, re-evaluate the project's auto-pause state.
+        // After every session, reconcile the project's auto-pause state:
+        // a successful *manual* run clears a prior pause (ENG-01), otherwise
+        // re-evaluate the failure streak (which may pause).
         const refreshed = projects.findById(project.id)
         if (refreshed) {
-          evaluateAutoPause(
-            { projects, sessions: new (await import('./repositories.js')).SessionRepository(dbHandle.db) },
+          const sessionsRepo = new (
+            await import('./repositories.js')
+          ).SessionRepository(dbHandle.db)
+          const session = result.sessionId
+            ? sessionsRepo.findById(result.sessionId)
+            : null
+          reconcileAutoPauseAfterSession(
+            { projects, sessions: sessionsRepo },
             refreshed,
+            session,
+            { manual: job.source === 'manual' },
           )
         }
         const failed =

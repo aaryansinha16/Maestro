@@ -225,6 +225,17 @@ describe('consecutiveFailures', () => {
       consecutiveFailures([fixtureSession({ status: 'completed', prNumber: 1 })]),
     ).toBe(0)
   })
+  it('skips fixup turns so a completed fixup cannot mask a failed parent (ENG-02)', () => {
+    const sessions = [
+      fixtureSession({ status: 'completed', prNumber: 2, isFixupTurn: true }),
+      fixtureSession({ status: 'failed', prNumber: null }),
+      fixtureSession({ status: 'failed', prNumber: null }),
+      fixtureSession({ status: 'failed', prNumber: null }),
+    ]
+    // The leading completed *fixup* must be skipped, not treated as a success
+    // that breaks the streak — the three failed parents still count.
+    expect(consecutiveFailures(sessions)).toBe(3)
+  })
 })
 
 describe('evaluateSkipRules — composition', () => {

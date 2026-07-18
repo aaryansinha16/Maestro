@@ -36,6 +36,7 @@ import {
 } from '@maestro/api'
 import {
   AutonomyFileSchema,
+  COST_THROTTLE_ALL_FRACTION,
   COST_WARN_BUDGET_FRACTION,
   DEFAULT_MONTHLY_BUDGET_USD,
   JOB_PRIORITY_MANUAL,
@@ -74,6 +75,28 @@ import {
   ScheduledRunsRepository,
   SessionRepository,
 } from './repositories.js'
+
+/**
+ * ENG-04: a manual "Trigger now" deliberately bypasses the scheduling cost
+ * throttle (ADR-021 — it is an intentional override), but if the monthly
+ * budget is already blown we return a warning so the override is not silent.
+ * The run still fires; its spend is bounded per-session (ENG-03). Pure and
+ * exported for direct testing. Returns null below the throttle line.
+ */
+export function overBudgetWarning(
+  monthCents: number,
+  monthlyBudgetUsd: number,
+): string | null {
+  const monthlyBudgetCents = Math.round(monthlyBudgetUsd * 100)
+  if (monthlyBudgetCents <= 0) return null
+  const fraction = monthCents / monthlyBudgetCents
+  if (fraction < COST_THROTTLE_ALL_FRACTION) return null
+  return (
+    `Monthly spend is at ${(fraction * 100).toFixed(0)}% of budget ` +
+    `($${(monthCents / 100).toFixed(2)} of $${monthlyBudgetUsd.toFixed(0)}). ` +
+    `This manual run will still fire — its spend is capped per-session.`
+  )
+}
 
 export interface ServerDeps {
   /** Best-effort uptime baseline for the /health response. */
@@ -696,7 +719,13 @@ export function buildServer(deps: ServerDeps): Hono {
       source: 'manual',
       priority: JOB_PRIORITY_MANUAL,
     })
-    return c.json({ ok: true, jobId: job.id })
+    // ENG-04: manual triggers still fire (intentional override), but warn if
+    // the monthly budget is already blown so the override isn't silent.
+    const monthlyBudgetUsd = Number(
+      process.env['MAESTRO_BUDGET_USD'] ?? DEFAULT_MONTHLY_BUDGET_USD,
+    )
+    const warning = overBudgetWarning(costs.aggregate().monthCents, monthlyBudgetUsd)
+    return c.json({ ok: true, jobId: job.id, ...(warning ? { warning } : {}) })
   })
 
   // Phase 5 / Sub 5.3: manual backup. Sits behind Basic Auth like every

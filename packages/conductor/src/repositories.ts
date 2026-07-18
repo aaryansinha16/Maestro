@@ -297,7 +297,13 @@ export class SessionRepository {
     const offset = opts.offset ?? 0
     const rows = this.db
       .prepare<[...typeof params, number, number], SessionRow>(
-        `SELECT * FROM sessions ${where} ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+        // rowid DESC is a deterministic tiebreaker: two sessions inserted in
+        // the same millisecond (common in tests, possible in bursts) would
+        // otherwise order arbitrarily, making newest-first ordering — which
+        // the failure-detection logic (auto-pause, skip-rules) depends on —
+        // nondeterministic. rowid increments with insertion, so equal
+        // timestamps fall back to insertion order. ENG-02-adjacent.
+        `SELECT * FROM sessions ${where} ORDER BY started_at DESC, rowid DESC LIMIT ? OFFSET ?`,
       )
       .all(...params, limit, offset)
     return { sessions: rows.map(rowToSession), total }

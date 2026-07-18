@@ -14,7 +14,7 @@ import {
   type Session,
 } from '@maestro/shared'
 import type { ProjectRepository, SessionRepository } from './repositories.js'
-import { sessionFailedForBackoff } from './skip-rules.js'
+import { consecutiveFailures, sessionFailedForBackoff } from './skip-rules.js'
 import { logger } from './logger.js'
 
 export interface AutoPauseDeps {
@@ -43,7 +43,7 @@ export function evaluateAutoPause(
   const recent = deps.sessions
     .list({ projectId: project.id, limit: threshold + 5 })
     .sessions
-  const consecutive = countConsecutiveFailures(recent)
+  const consecutive = consecutiveFailures(recent)
 
   // Transition: not paused → paused
   if (!project.autoPausedAt && consecutive >= threshold) {
@@ -81,11 +81,20 @@ export function maybeClearAutoPauseOnManualSuccess(
   return true
 }
 
-function countConsecutiveFailures(sessions: Session[]): number {
-  let count = 0
-  for (const s of sessions) {
-    if (sessionFailedForBackoff(s)) count++
-    else break
+/**
+ * Post-session hook for the queue runner. A successful *manual* run clears a
+ * prior auto-pause (the developer fixed the project); otherwise re-evaluate
+ * the failure streak, which may pause. Consolidates ENG-01's clear-on-manual
+ * with the existing pause-on-failure evaluation so the runner makes one call.
+ */
+export function reconcileAutoPauseAfterSession(
+  deps: AutoPauseDeps,
+  project: Project,
+  session: Session | null,
+  opts: { manual: boolean },
+): { transitioned: 'paused' | 'resumed' | null; consecutive: number } {
+  if (opts.manual && session && maybeClearAutoPauseOnManualSuccess(deps, project, session)) {
+    return { transitioned: 'resumed', consecutive: 0 }
   }
-  return count
+  return evaluateAutoPause(deps, project)
 }
