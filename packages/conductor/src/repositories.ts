@@ -308,6 +308,21 @@ export class SessionRepository {
       .all(...params, limit, offset)
     return { sessions: rows.map(rowToSession), total }
   }
+
+  /**
+   * SQL COUNT of a project's sessions started at/after an ISO instant.
+   * Replaces pulling up to 1000 rows and filtering in JS (ENG-14): correct
+   * regardless of volume and far cheaper. ISO-8601 UTC strings compare
+   * chronologically under lexicographic ordering.
+   */
+  countSince(projectId: string, sinceIso: string): number {
+    const row = this.db
+      .prepare<[string, string], { count: number }>(
+        'SELECT COUNT(*) AS count FROM sessions WHERE project_id = ? AND started_at >= ?',
+      )
+      .get(projectId, sinceIso)
+    return row?.count ?? 0
+  }
 }
 
 // ─── Aggregations (Phase 1.5 cost tracking) ─────────────────────────
@@ -917,6 +932,10 @@ export class PrFeedbackRepository {
     at?: string
   }): number {
     if (input.prNumbers.length === 0) return 0
+    // ENG-11: this runs from a fire-and-forget post-session step that can land
+    // after graceful shutdown has closed the DB. Best-effort — no-op rather
+    // than throwing "The database connection is not open".
+    if (!this.db.open) return 0
     const placeholders = input.prNumbers.map(() => '?').join(',')
     const at = input.at ?? new Date().toISOString()
     const result = this.db

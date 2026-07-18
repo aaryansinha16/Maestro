@@ -14,6 +14,7 @@ import cron, { type ScheduledTask } from 'node-cron'
 import type Database from 'better-sqlite3'
 import { join } from 'node:path'
 import {
+  DEFAULT_MONTHLY_BUDGET_USD,
   SCHEDULER_POLL_INTERVAL_MS,
   WORK_SUBDIR,
   type Project,
@@ -280,14 +281,11 @@ class SchedulerImpl implements Scheduler {
   private async buildContext(project: Project): Promise<SkipRuleContext> {
     const todayStart = new Date()
     todayStart.setUTCHours(0, 0, 0, 0)
-    const todayCount = this.sessions.list({
-      projectId: project.id,
-      limit: 1000,
-    }).sessions.filter((s) => new Date(s.startedAt) >= todayStart).length
+    const todayCount = this.sessions.countSince(project.id, todayStart.toISOString())
     const recent = this.sessions.list({ projectId: project.id, limit: 10 }).sessions
     const costs = this.costs.aggregate()
     const monthlyBudgetUsd = Number(
-      process.env['MAESTRO_BUDGET_USD'] ?? 50,
+      process.env['MAESTRO_BUDGET_USD'] ?? DEFAULT_MONTHLY_BUDGET_USD,
     )
     const workingDir = join(this.config.dataDir, WORK_SUBDIR, project.slug)
     return {
@@ -298,7 +296,9 @@ class SchedulerImpl implements Scheduler {
       costs,
       workingDir,
       developerName: this.config.developerName,
-      monthlyBudgetUsd: Number.isFinite(monthlyBudgetUsd) ? monthlyBudgetUsd : 50,
+      monthlyBudgetUsd: Number.isFinite(monthlyBudgetUsd)
+        ? monthlyBudgetUsd
+        : DEFAULT_MONTHLY_BUDGET_USD,
     }
   }
 }
