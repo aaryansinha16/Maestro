@@ -22,7 +22,7 @@ export function ProjectDetail() {
   const [feedback, setFeedback] = useState<GetProjectFeedbackResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [triggerState, setTriggerState] = useState<
-    { kind: 'idle' } | { kind: 'pending' } | { kind: 'ok'; jobId: string } | { kind: 'err'; message: string }
+    { kind: 'idle' } | { kind: 'pending' } | { kind: 'ok'; jobId: string; warning?: string } | { kind: 'err'; message: string }
   >({ kind: 'idle' })
 
   useEffect(() => {
@@ -65,10 +65,10 @@ export function ProjectDetail() {
   const triggerNow = async () => {
     setTriggerState({ kind: 'pending' })
     try {
-      const res = await api.post<{ ok: true; jobId: string }>(
+      const res = await api.post<{ ok: true; jobId: string; warning?: string }>(
         `/api/projects/${encodeURIComponent(p.slug)}/trigger`,
       )
-      setTriggerState({ kind: 'ok', jobId: res.jobId })
+      setTriggerState({ kind: 'ok', jobId: res.jobId, warning: res.warning })
     } catch (err) {
       setTriggerState({
         kind: 'err',
@@ -131,6 +131,9 @@ export function ProjectDetail() {
             the queue page
           </Link>
           .
+          {triggerState.warning ? (
+            <p className="mt-1 text-amber-300">⚠ {triggerState.warning}</p>
+          ) : null}
         </div>
       ) : null}
       {triggerState.kind === 'err' ? (
