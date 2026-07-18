@@ -128,6 +128,22 @@ async function main(): Promise<void> {
     logger.info({ address: info.address, port: info.port }, 'conductor listening')
   })
 
+  // ENG-06: best-effort GitHub token scope check at boot — surfaces a
+  // mis-scoped token in the logs immediately rather than deep in the first
+  // push/PR. Non-blocking (fire-and-forget) and non-fatal.
+  if (config.githubToken) {
+    const token = config.githubToken
+    void (async () => {
+      try {
+        const { createGitHubClient } = await import('./pr-manager.js')
+        await createGitHubClient({ token }).verifyScopes()
+        logger.info('github token scopes verified')
+      } catch (err) {
+        logger.warn({ err }, 'github token scope check failed — pushes/PRs may fail')
+      }
+    })()
+  }
+
   let shuttingDown = false
   const shutdown = (signal: string) => {
     if (shuttingDown) return
