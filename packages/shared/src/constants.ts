@@ -148,6 +148,15 @@ export const COST_WARN_PER_SESSION_CENTS = 100
 // Default monthly budget when MAESTRO_BUDGET_USD env var is unset.
 export const DEFAULT_MONTHLY_BUDGET_USD = 50
 
+// Hard backstop on a SINGLE session's estimated spend, passed to Claude Code
+// via --max-budget-usd (ENG-03). Normal sessions cost well under
+// COST_WARN_PER_SESSION_CENTS ($1); this ceiling (10x the warn line) exists
+// only to bound a runaway loop, not to budget normal work. Overridable
+// per-host via MAESTRO_SESSION_BUDGET_USD; a non-positive value disables it.
+// Under the subscription model this bounds token consumption more than real
+// dollars (ADR-001).
+export const DEFAULT_SESSION_BUDGET_USD = 10
+
 // Threshold (fraction of monthly budget) at which the dashboard surfaces a
 // "approaching budget" alert.
 export const COST_WARN_BUDGET_FRACTION = 0.8
