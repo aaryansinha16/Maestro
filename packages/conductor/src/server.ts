@@ -266,14 +266,20 @@ export function buildServer(deps: ServerDeps): Hono {
       join(process.env['HOME'] ?? '/root', '.claude')
     let credentialsAt: string | null = null
     let authenticated: boolean | null = null
-    try {
-      const info = await stat(join(configDir, '.credentials.json'))
-      credentialsAt = info.mtime.toISOString()
+    if (process.env['CLAUDE_CODE_OAUTH_TOKEN']) {
+      // SH-02: headless BYO-token auth — no creds file on disk, but the CLI
+      // authenticates from the token env var. Treat as authenticated.
       authenticated = true
-    } catch {
-      // No file ⇒ on Linux/Docker that means not logged in; on macOS the
-      // keychain holds the OAuth token, so absence proves nothing.
-      authenticated = process.platform === 'darwin' ? null : installed ? false : null
+    } else {
+      try {
+        const info = await stat(join(configDir, '.credentials.json'))
+        credentialsAt = info.mtime.toISOString()
+        authenticated = true
+      } catch {
+        // No file ⇒ on Linux/Docker that means not logged in; on macOS the
+        // keychain holds the OAuth token, so absence proves nothing.
+        authenticated = process.platform === 'darwin' ? null : installed ? false : null
+      }
     }
 
     return c.json({

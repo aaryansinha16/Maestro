@@ -94,6 +94,14 @@ curl https://maestro.<your-domain>/api/health/claude
 The dashboard shows a yellow banner whenever this endpoint reports the
 CLI missing or unauthenticated — if you see it, re-run the bootstrap.
 
+**Headless alternative — no interactive shell (SH-02).** Instead of
+`claude /login` on the box, run `claude setup-token` on your own machine
+and set the resulting ~1-year token as the `CLAUDE_CODE_OAUTH_TOKEN`
+service variable. The conductor forwards it to every agent session, so a
+headless deploy authenticates with your own subscription without
+`railway shell`. This is the recommended path when deploying your own
+instance — your token, your box.
+
 **Fallback — plain VPS.** If interactive shell access on Railway breaks,
 the same image runs anywhere Docker does (DigitalOcean, Hetzner, a home
 server): `docker run -v maestro-data:/data -p 3000:3000 <image>`, then
