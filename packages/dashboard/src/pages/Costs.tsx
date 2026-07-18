@@ -28,8 +28,12 @@ export function Costs() {
         <p className="text-xs uppercase tracking-[0.2em] text-amber-500">Spend</p>
         <h2 className="mt-1 text-2xl font-semibold text-white">Costs</h2>
         <p className="mt-1 text-sm text-navy-300">
-          Rolling 30-day Anthropic spend across all Maestro sessions, with per-project breakdown
+          Rolling 30-day spend across all Maestro sessions, with per-project breakdown
           and a cost-per-merged-PR efficiency metric.
+        </p>
+        <p className="mt-1 text-xs text-navy-400">
+          Estimated from session token counts at published API rates — under a Pro/Max
+          subscription no per-token charge applies, so treat these as a usage signal, not a bill.
         </p>
       </header>
 
