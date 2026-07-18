@@ -10,6 +10,7 @@ import { basicAuth } from 'hono/basic-auth'
 import { cors } from 'hono/cors'
 import { logger as honoLogger } from 'hono/logger'
 import { HTTPException } from 'hono/http-exception'
+import { secureHeaders } from 'hono/secure-headers'
 import { ZodError } from 'zod'
 import { existsSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
@@ -182,6 +183,10 @@ export function buildServer(deps: ServerDeps): Hono {
   const probeCache = new Map<string, { at: number; body: unknown }>()
   const PROBE_CACHE_TTL_MS = 60_000
 
+  // PROD-05: standard security headers (HSTS, X-Frame-Options, nosniff, …) on
+  // every response. No CSP by default so the static dashboard SPA keeps
+  // working; TLS is terminated at the platform edge.
+  app.use('*', secureHeaders())
   app.use('*', honoLogger((msg) => logger.debug(msg)))
   // CORS only when an explicit origin allowlist is configured. The
   // production layout serves the dashboard same-origin (Sub 5.1) and the
@@ -198,7 +203,9 @@ export function buildServer(deps: ServerDeps): Hono {
       password: deps.authPassword,
     })
     app.use('*', async (c, next) => {
-      if (c.req.path === '/api/health') return next()
+      if (c.req.path === '/api/health' || c.req.path === '/api/health/ready') {
+        return next()
+      }
       return requireAuth(c, next)
     })
     logger.info({ user: deps.authUser }, 'basic auth enabled')
@@ -286,6 +293,20 @@ export function buildServer(deps: ServerDeps): Hono {
       timestamp: new Date().toISOString(),
     })
     return c.json(body)
+  })
+
+  // PROD-04: readiness probe — verifies the SQLite handle actually answers,
+  // unlike /api/health which is liveness-only. Auth-exempt for platform
+  // probes; 503 when the DB is unreachable so an orchestrator can react.
+  app.get('/api/health/ready', (c) => {
+    let dbOk = false
+    try {
+      deps.db.prepare('SELECT 1').get()
+      dbOk = true
+    } catch (err) {
+      logger.error({ err }, 'readiness: database ping failed')
+    }
+    return c.json({ status: dbOk ? 'ready' : 'degraded', db: dbOk }, dbOk ? 200 : 503)
   })
 
   app.get('/api/projects', (c) => {
