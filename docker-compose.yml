@@ -1,0 +1,42 @@
+# Self-host Maestro with one command:
+#
+#   cp .env.example .env     # fill DEVELOPER_*, GITHUB_TOKEN, MAESTRO_AUTH_*,
+#                            # and CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`)
+#   docker compose up -d --build
+#
+# Persistence (SQLite DB, working clones, Claude OAuth creds) lives on the named
+# volume `maestro-data` mounted at /data, surviving restarts and rebuilds.
+# The image sets NODE_ENV=production, so the conductor refuses to boot unless
+# MAESTRO_AUTH_USER + MAESTRO_AUTH_PASSWORD are set (or
+# MAESTRO_ALLOW_UNAUTHENTICATED=true). See docs/DEPLOYMENT.md.
+services:
+  maestro:
+    build: .
+    image: maestro:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # These override anything in .env (environment wins over env_file) so the
+      # container is always correct even if .env carries local-dev values like
+      # MAESTRO_DATA_DIR=./data. The published port mapping below then stays stable.
+      MAESTRO_PORT: '3000'
+      MAESTRO_DATA_DIR: /data
+      CLAUDE_CONFIG_DIR: /data/claude
+    ports:
+      - '${MAESTRO_HOST_PORT:-3000}:3000'
+    volumes:
+      - maestro-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  maestro-data:
