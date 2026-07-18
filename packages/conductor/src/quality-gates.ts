@@ -53,18 +53,28 @@ export async function runQualityGates(input: RunGatesInput): Promise<RunGatesRes
   for (const gate of input.gates) {
     const command = stack.gates[gate]
     if (!command) {
+      // ENG-05: a gate the project explicitly configured but that resolves to
+      // no runnable command must NOT silently pass — that reports false
+      // confidence (CLAUDE.md: "NEVER skip quality gates"). Fail it with a
+      // clear reason so the branch is held back from a PR until the developer
+      // adds the command or drops the gate from qualityGates.
       logger.warn(
         { gate, stack: stack.stack, projectRoot: input.projectRoot },
-        'no command resolved for gate — skipping',
+        'configured quality gate has no runnable command — failing (ENG-05)',
       )
       results.push({
         gate,
-        status: 'skipped',
-        output: `(no command available for gate "${gate}" on stack "${stack.stack}")`,
+        status: 'failed',
+        output:
+          `Quality gate "${gate}" is configured but no command could be resolved ` +
+          `for stack "${stack.stack}". Add a matching script (e.g. a "${gate}" ` +
+          `entry in package.json scripts) or remove "${gate}" from qualityGates ` +
+          `in autonomy.json.`,
         fullOutput: '',
         durationMs: 0,
         command: null,
       })
+      allPassed = false
       continue
     }
     const result = await runOneGate({ gate, command, cwd: input.projectRoot, timeoutMs })
