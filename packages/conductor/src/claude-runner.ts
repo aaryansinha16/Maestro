@@ -95,6 +95,10 @@ export async function runClaudeSession(input: ClaudeRunInput): Promise<ClaudeRun
     env: claudeEnv(input.extraEnv),
     input: input.prompt,
     reject: false,
+    // detached:true makes the child its own process-group leader so a budget
+    // kill can signal the whole group (incl. Bash-tool grandchildren) instead
+    // of orphaning them. See killTree() / ENG-10.
+    detached: true,
     // We pipe stdin ourselves above. stdout/stderr go to the log file.
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -183,6 +187,26 @@ interface BudgetTimers {
   cause: TerminationCause | null
 }
 
+/**
+ * Signal the agent's whole process group (ENG-10). `runClaudeSession` spawns
+ * `claude` with `detached: true`, making it a group leader, so a negative pid
+ * reaches its Bash-tool grandchildren too. Falls back to the direct child if
+ * the group is already gone. Never throws.
+ */
+function killTree(child: ResultPromise<{ reject: false }>, signal: NodeJS.Signals): void {
+  const pid = child.pid
+  if (pid === undefined) return
+  try {
+    process.kill(-pid, signal)
+  } catch {
+    try {
+      child.kill(signal)
+    } catch {
+      /* already exited */
+    }
+  }
+}
+
 function scheduleBudgetSignals(
   child: ResultPromise<{ reject: false }>,
   budgetSeconds: number,
@@ -204,7 +228,7 @@ function scheduleBudgetSignals(
           'budget − 5min: SIGTERM (graceful wrap-up)',
         )
         try {
-          child.kill('SIGTERM')
+          killTree(child, 'SIGTERM')
           if (!state.cause) state.cause = 'graceful'
         } catch {
           /* already exited */
@@ -217,7 +241,7 @@ function scheduleBudgetSignals(
     setTimeout(() => {
       logger.warn({ budgetSeconds }, 'budget reached: SIGTERM')
       try {
-        child.kill('SIGTERM')
+        killTree(child, 'SIGTERM')
         state.cause = 'sigterm-timeout'
       } catch {
         /* already exited */
@@ -229,7 +253,7 @@ function scheduleBudgetSignals(
     setTimeout(() => {
       logger.error({ budgetSeconds }, 'budget + 30s: SIGKILL')
       try {
-        child.kill('SIGKILL')
+        killTree(child, 'SIGKILL')
         state.cause = 'sigkill-timeout'
       } catch {
         /* already exited */
