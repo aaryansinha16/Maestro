@@ -230,6 +230,30 @@ maestro schedule enable <slug>
 
 The full walkthrough lives in [`docs/PROJECT_ONBOARDING.md`](./docs/PROJECT_ONBOARDING.md).
 
+### Self-host your own instance
+
+Maestro is meant to be **self-hosted** — you run your own instance on your own
+Claude Pro/Max subscription. (Anthropic's terms don't allow routing your
+subscription through someone else's hosted service, so there's no shared SaaS —
+each user runs their own box.) One command with Docker Compose:
+
+```bash
+cp .env.example .env     # fill DEVELOPER_*, GITHUB_TOKEN, MAESTRO_AUTH_*,
+                         # and CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`)
+docker compose up -d --build
+```
+
+- **Headless Claude auth:** run `claude setup-token` on your own machine and
+  paste the ~1-year token into `.env` as `CLAUDE_CODE_OAUTH_TOKEN` — no
+  interactive login on the server.
+- **Auth required:** the production image refuses to boot without
+  `MAESTRO_AUTH_USER` + `MAESTRO_AUTH_PASSWORD` (or an explicit
+  `MAESTRO_ALLOW_UNAUTHENTICATED=true`).
+- **Persistence:** the `maestro-data` volume holds the SQLite DB, working
+  clones, and Claude creds at `/data`.
+
+For Railway and bare-VPS deploys, see [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md).
+
 ---
 
 ## The `.maestro/` contract

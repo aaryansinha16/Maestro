@@ -4,6 +4,27 @@ Maestro is designed to run as a single long-lived service on a small VPS. The
 canonical target is [Railway](https://railway.app) — one Dockerfile, one
 volume, one set of environment variables.
 
+## Self-host with Docker Compose (simplest)
+
+The repo ships a `docker-compose.yml` for running your own instance anywhere
+Docker runs:
+
+```bash
+cp .env.example .env     # fill DEVELOPER_*, GITHUB_TOKEN, MAESTRO_AUTH_*
+# Recommended for a headless box — your own subscription token:
+#   claude setup-token   (run locally) → paste into .env as CLAUDE_CODE_OAUTH_TOKEN
+docker compose up -d --build
+curl http://localhost:3000/api/health     # → {"status":"ok",...}
+```
+
+The `maestro-data` volume persists `/data` (SQLite, working clones, Claude
+creds) across restarts. `MAESTRO_DATA_DIR` and `CLAUDE_CONFIG_DIR` are pinned to
+`/data` by the compose file regardless of `.env`; set `MAESTRO_HOST_PORT` to map
+a different host port. The production image sets `NODE_ENV=production`, so auth
+must be configured (see below) or the conductor refuses to boot.
+
+The Railway path below remains the canonical hosted target.
+
 ## Prerequisites
 
 - A Railway project with a paid plan (the conductor needs to stay up).
