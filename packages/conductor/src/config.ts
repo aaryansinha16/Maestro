@@ -98,7 +98,44 @@ export function loadConfig(): Config {
   // process cwd. Absolute paths pass through unchanged.
   const dataDir = resolveAgainstEnvFile(parsed.data.dataDir)
 
+  // PROD-01: never boot a public production instance with auth misconfigured —
+  // fail loud with instructions instead of silently serving wide open.
+  assertProductionAuth({
+    nodeEnv: parsed.data.nodeEnv,
+    authUser: parsed.data.authUser,
+    authPassword: parsed.data.authPassword,
+    allowUnauthenticated: process.env['MAESTRO_ALLOW_UNAUTHENTICATED'] === 'true',
+  })
+
   return { ...parsed.data, dataDir }
+}
+
+/**
+ * PROD-01: fail closed. A production deploy must have Basic Auth configured
+ * (both vars) or explicitly opt out via MAESTRO_ALLOW_UNAUTHENTICATED=true;
+ * otherwise refuse to boot rather than silently exposing an open dashboard.
+ * The prior behaviour disabled auth with only a warning when a single var was
+ * set — a one-typo path to a fully public instance. Pure + exported for tests.
+ */
+export function assertProductionAuth(input: {
+  nodeEnv: Config['nodeEnv']
+  authUser?: string | undefined
+  authPassword?: string | undefined
+  allowUnauthenticated: boolean
+}): void {
+  if (input.nodeEnv !== 'production') return
+  if (input.authUser && input.authPassword) return
+  if (input.allowUnauthenticated) return
+  throw new MaestroError('CONFIG_VALIDATION_FAILED', {
+    message:
+      'Refusing to boot in production without dashboard auth. Set BOTH ' +
+      'MAESTRO_AUTH_USER and MAESTRO_AUTH_PASSWORD (recommended), or set ' +
+      'MAESTRO_ALLOW_UNAUTHENTICATED=true to explicitly run an open instance.',
+    context: {
+      authUserSet: Boolean(input.authUser),
+      authPasswordSet: Boolean(input.authPassword),
+    },
+  })
 }
 
 /**
