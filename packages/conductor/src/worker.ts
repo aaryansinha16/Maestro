@@ -430,6 +430,10 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
   // Tracked across the rest of this function so the final status report can
   // accurately tell the developer whether a fixup turn actually fired.
   let didRunFixupTurn = false
+  // Which session's gate rows the final report reflects. Advances to the fixup
+  // turn's id once a fixup runs, so the reported gates show the LAST run, not
+  // the failed first one. ENG-09.
+  let gateReportSessionId = input.sessionId
 
   const baseFinalize = (
     status: SessionStatus,
@@ -465,7 +469,7 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
       commitSha: filesChanged.length > 0 ? headSha : null,
       branchName: branchOk ? branch : null,
       prNumber: extra.prNumber ?? null,
-      qualityGates: input.gates.listForSession(input.sessionId),
+      qualityGates: input.gates.listForSession(gateReportSessionId),
       costCents: runResult.costCents,
       journalPath: touchedMaestro.newJournalFile
         ? join('.maestro', 'journal', touchedMaestro.newJournalFile)
@@ -559,6 +563,7 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
       gates: project.autonomyConfig.qualityGates,
     })
     recordGateResults(fixupSessionId, input.gates, secondGateRun.results)
+    gateReportSessionId = fixupSessionId
   }
 
   // Step 10: PR creation ----------------------------------------------------------
