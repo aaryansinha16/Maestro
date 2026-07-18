@@ -163,7 +163,18 @@ function argsForScaffolder(cwd: string): string[] {
 }
 
 function claudeScaffolderEnv(): NodeJS.ProcessEnv {
-  const allow = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TERM', 'SHELL', 'TMPDIR']
+  // Same auth passthrough as claude-runner.claudeEnv (SH-02).
+  const allow = [
+    'PATH',
+    'HOME',
+    'LANG',
+    'LC_ALL',
+    'TERM',
+    'SHELL',
+    'TMPDIR',
+    'CLAUDE_CONFIG_DIR',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+  ]
   const out: NodeJS.ProcessEnv = {}
   for (const key of allow) {
     const v = process.env[key]

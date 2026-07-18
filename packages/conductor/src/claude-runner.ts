@@ -368,9 +368,25 @@ function flushAndClose(stream: WriteStream): Promise<void> {
   })
 }
 
-/** Whitelisted env for the agent. Mirrors quality-gates.cleanEnv. */
-function claudeEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const allow = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TERM', 'SHELL', 'TMPDIR']
+/**
+ * Whitelisted env for the agent. Mirrors quality-gates.cleanEnv, plus the
+ * Claude Code auth passthrough (SH-02): CLAUDE_CONFIG_DIR points the CLI at the
+ * persistent OAuth creds dir, and CLAUDE_CODE_OAUTH_TOKEN lets a self-hoster
+ * authenticate a headless instance with their own `claude setup-token` token
+ * instead of an interactive login. Exported for testing.
+ */
+export function claudeEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const allow = [
+    'PATH',
+    'HOME',
+    'LANG',
+    'LC_ALL',
+    'TERM',
+    'SHELL',
+    'TMPDIR',
+    'CLAUDE_CONFIG_DIR',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+  ]
   const out: NodeJS.ProcessEnv = {}
   for (const key of allow) {
     const value = process.env[key]
