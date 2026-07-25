@@ -73,24 +73,20 @@ conductor looks for `MAESTRO_DASHBOARD_DIR`, then the repo-relative
 `packages/dashboard/dist`. Opening `https://maestro.<your-domain>/`
 should render the Overview page with no separate dashboard process.
 
-## Git push credentials
+## Git credentials
 
-The conductor pushes branches over HTTPS. The Docker image ships a
-system-wide git credential helper that feeds `GITHUB_TOKEN` from the
-environment at push time, so no extra setup is needed on Railway — just
-ensure `GITHUB_TOKEN` is set as a service variable.
+The conductor authenticates git clone/fetch/push to GitHub **per operation**
+with a token URL (`https://x-access-token:$GITHUB_TOKEN@github.com/...`), the
+same way GitHub Actions does. So the only requirement — in Docker, on a bare
+VPS, or in local dev — is that **`GITHUB_TOKEN` is set** (a fine-grained PAT
+with `contents: write` + `pull requests: write`). No git credential helper is
+needed or configured, which also sidesteps the Git 2.50 restriction that
+blocks the old `!shell` helper.
 
-Running the conductor **outside Docker** (a bare VPS, `pnpm dev`)? The
-host's own git credential setup handles auth — on macOS that's the
-keychain; on Linux, configure a helper once:
-
-```bash
-git config --global credential.helper \
-  '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GITHUB_TOKEN"; }; f'
-```
-
-Without a helper (and without a token-embedded remote), the worker's
-push fails auth and the session is marked failed before a PR opens.
+The token is used only for the individual git command and is never written to
+a clone's `.git/config`, so the sandboxed agent running inside a working clone
+cannot read it. Without `GITHUB_TOKEN` the worker still commits locally, but
+the push fails and the session is marked failed before a PR opens.
 
 ## Claude Code bootstrap (one-time per deploy host)
 
