@@ -44,4 +44,14 @@ describe('health + hardening', () => {
     const res = await server().request('/api/health')
     expect(res.headers.get('x-content-type-options')).toBe('nosniff')
   })
+
+  it('GET /api/settings returns non-secret config (UI-01)', async () => {
+    const res = await server().request('/api/settings')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body).toMatchObject({ version: 'test', authEnabled: false, githubConfigured: false })
+    // Never leak secret values.
+    expect(body).not.toHaveProperty('authPassword')
+    expect(body).not.toHaveProperty('githubToken')
+  })
 })
