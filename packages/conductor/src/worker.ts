@@ -568,13 +568,20 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
 
   // Step 10: PR creation ----------------------------------------------------------
   const baseBranch = project.autonomyConfig.branches.base
-  // The push authenticates via git's credential layer. On a dev machine
-  // the host's own helper supplies the token (e.g. macOS keychain); in the
-  // Docker image a system-wide credential helper feeds GITHUB_TOKEN from
-  // the environment (see Dockerfile + docs/DEPLOYMENT.md). Without one of
-  // those a headless host's push would fail auth — which is the deploy
-  // gotcha this paths around.
-  await git.push(['-u', 'origin', branch])
+  // Push with a token-authenticated URL when we have a token + GitHub HTTPS
+  // remote (like GitHub Actions) — this sidesteps git credential helpers,
+  // which are fragile headless and, since Git 2.50, break the push's credential
+  // store step (VAL-01: "Configuring credential.helper is not permitted"). For
+  // local/test (file://) or token-less setups, fall back to the ambient origin.
+  // The token is never persisted (no `-u`) and redacted from any error. ENG-07.
+  const pushRemote = authenticatedPushUrl(project.repoUrl, config.githubToken)
+  try {
+    await (pushRemote ? git.push([pushRemote, branch]) : git.push(['-u', 'origin', branch]))
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err)
+    const safe = config.githubToken ? raw.split(config.githubToken).join('***') : raw
+    throw new Error(`git push failed: ${safe}`)
+  }
 
   const githubClient =
     input.githubClient ??
@@ -709,6 +716,23 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
 
 function workingDirFor(dataDir: string, slug: string): string {
   return resolve(dataDir, WORK_SUBDIR, slug)
+}
+
+/**
+ * Build a token-authenticated HTTPS push URL for a GitHub repo, or null when
+ * there's no token or the remote isn't github.com HTTPS. Pushing to this URL
+ * avoids git credential helpers — fragile on headless hosts and, since Git
+ * 2.50, blocked when the push's credential *store* step runs a `!shell` helper
+ * (surfaced by VAL-01 as "Configuring credential.helper is not permitted").
+ * The token lives only in the transient push argument (never persisted via
+ * `-u`, never logged — redacted on error), matching how GitHub Actions pushes
+ * and the single-owner self-host threat model. ENG-07.
+ */
+export function authenticatedPushUrl(repoUrl: string, token: string | undefined): string | null {
+  if (!token) return null
+  const m = /^https:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(repoUrl.trim())
+  if (!m) return null
+  return `https://x-access-token:${token}@github.com/${m[1]}/${m[2]}.git`
 }
 
 function sessionLogPath(dataDir: string, sessionId: string): string {
