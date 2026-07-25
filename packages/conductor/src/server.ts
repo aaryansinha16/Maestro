@@ -482,8 +482,11 @@ export function buildServer(deps: ServerDeps): Hono {
 
   app.get('/api/prs', (c) => {
     // Fan out across projects with PRs from completed sessions.
+    // UI-04: honor the projectId filter (the status filter can't be honored
+    // from session data — session status is not the GitHub PR state).
+    const projectId = c.req.query('projectId')
     const projectMap = new Map(projects.list().map((p) => [p.id, p]))
-    const list = sessions.list({ limit: 200 })
+    const list = sessions.list(projectId ? { projectId, limit: 200 } : { limit: 200 })
     const pulls = list.sessions
       .filter((s) => s.prNumber !== null)
       .map((s) => {
@@ -502,6 +505,45 @@ export function buildServer(deps: ServerDeps): Hono {
         }
       })
     return c.json({ pullRequests: pulls })
+  })
+
+  // UI-02: merge a Maestro-opened PR from the dashboard (squash), closing the
+  // review→merge loop without leaving Maestro. Auth-guarded like every other
+  // state-changing route. A branch-protection/unmergeable state comes back as
+  // { merged: false, reason } rather than an error, so the UI can show why.
+  app.post('/api/projects/:slug/prs/:number/merge', async (c) => {
+    const slug = c.req.param('slug')
+    const prNumber = Number(c.req.param('number'))
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+      return c.json({ error: { code: 'BAD_REQUEST', message: 'invalid PR number' } }, 400)
+    }
+    const project = projects.findBySlug(slug)
+    if (!project) return notFoundProject(c, slug)
+    const github = resolveGithub()
+    if (!github) return githubUnavailable(c)
+    let repo
+    try {
+      repo = parseRepoUrl(project.repoUrl)
+    } catch {
+      return c.json(
+        { error: { code: 'BAD_REPO_URL', message: 'project repo URL is not a GitHub repo' } },
+        400,
+      )
+    }
+    try {
+      const result = await github.mergePullRequest({ repo, prNumber, method: 'squash' })
+      return c.json(
+        result.status === 'merged'
+          ? { merged: true, sha: result.sha }
+          : { merged: false, reason: result.reason },
+      )
+    } catch (err) {
+      logger.error({ err, slug, prNumber }, 'dashboard merge failed')
+      return c.json({
+        merged: false,
+        reason: err instanceof Error ? err.message : 'merge failed',
+      })
+    }
   })
 
   // ─── Phase 2: scheduling + queue ──────────────────────────────────
