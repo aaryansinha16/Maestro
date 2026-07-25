@@ -24,6 +24,35 @@ export function PRs() {
   const api = useApi()
   const [data, setData] = useState<PRsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [merge, setMerge] = useState<
+    Record<string, { kind: 'pending' } | { kind: 'merged' } | { kind: 'err'; message: string }>
+  >({})
+
+  const mergePr = async (pr: OpenPR) => {
+    if (pr.prNumber === null) return
+    setMerge((m) => ({ ...m, [pr.sessionId]: { kind: 'pending' } }))
+    try {
+      const res = await api.post<{ merged: boolean; sha?: string; reason?: string }>(
+        `/api/projects/${encodeURIComponent(pr.projectSlug)}/prs/${pr.prNumber}/merge`,
+      )
+      setMerge((m) => ({
+        ...m,
+        [pr.sessionId]: res.merged
+          ? { kind: 'merged' }
+          : { kind: 'err', message: res.reason ?? 'merge blocked' },
+      }))
+    } catch (err) {
+      setMerge((m) => ({
+        ...m,
+        [pr.sessionId]: { kind: 'err', message: err instanceof Error ? err.message : 'merge failed' },
+      }))
+    }
+  }
+
+  const mergeError = (sid: string): string | null => {
+    const s = merge[sid]
+    return s && s.kind === 'err' ? s.message : null
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -95,6 +124,20 @@ export function PRs() {
               <div className="flex flex-col items-start gap-1 text-xs md:items-end">
                 <span className="text-navy-300">{formatDateTime(pr.startedAt)}</span>
                 <div className="flex items-center gap-2">
+                  {pr.prNumber !== null && merge[pr.sessionId]?.kind !== 'merged' ? (
+                    <button
+                      type="button"
+                      onClick={() => void mergePr(pr)}
+                      disabled={merge[pr.sessionId]?.kind === 'pending'}
+                      className="rounded border border-success-500/50 bg-success-500/10 px-2 py-0.5 text-success-400 transition hover:bg-success-500/20 disabled:opacity-40"
+                      title="Squash-merge this PR on GitHub"
+                    >
+                      {merge[pr.sessionId]?.kind === 'pending' ? 'Merging…' : 'Merge'}
+                    </button>
+                  ) : null}
+                  {merge[pr.sessionId]?.kind === 'merged' ? (
+                    <span className="text-success-400">merged ✓</span>
+                  ) : null}
                   {pr.prUrl ? (
                     <a
                       href={pr.prUrl}
@@ -109,6 +152,9 @@ export function PRs() {
                     session
                   </Link>
                 </div>
+                {mergeError(pr.sessionId) ? (
+                  <span className="text-danger">{mergeError(pr.sessionId)}</span>
+                ) : null}
               </div>
             </article>
           ))}
