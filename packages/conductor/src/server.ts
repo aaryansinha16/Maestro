@@ -39,7 +39,9 @@ import {
   AutonomyFileSchema,
   COST_THROTTLE_ALL_FRACTION,
   COST_WARN_BUDGET_FRACTION,
+  DEFAULT_MAX_PARALLEL,
   DEFAULT_MONTHLY_BUDGET_USD,
+  DEFAULT_SESSION_BUDGET_USD,
   JOB_PRIORITY_MANUAL,
   SESSION_LOG_TAIL_LINES,
   buildSessionPrompt,
@@ -313,6 +315,31 @@ export function buildServer(deps: ServerDeps): Hono {
       logger.error({ err }, 'readiness: database ping failed')
     }
     return c.json({ status: dbOk ? 'ready' : 'degraded', db: dbOk }, dbOk ? 200 : 503)
+  })
+
+  // UI-01: read-only operational settings for the dashboard Settings page.
+  // Non-secret only — reports WHETHER each secret is set, never its value.
+  app.get('/api/settings', (c) => {
+    return c.json({
+      version: deps.version,
+      developerName: deps.developerName,
+      developerGithubUsername: process.env['DEVELOPER_GITHUB_USERNAME'] ?? null,
+      dataDir: deps.dataDir,
+      timezone: deps.schedulerTimezone ?? 'UTC',
+      authEnabled: Boolean(deps.authUser && deps.authPassword),
+      corsEnabled: Boolean(deps.corsOrigin),
+      githubConfigured: Boolean(deps.githubToken),
+      telegramConfigured: Boolean(
+        process.env['TELEGRAM_BOT_TOKEN'] && process.env['TELEGRAM_CHAT_ID'],
+      ),
+      claudeTokenAuth: Boolean(process.env['CLAUDE_CODE_OAUTH_TOKEN']),
+      monthlyBudgetUsd: Number(process.env['MAESTRO_BUDGET_USD'] ?? DEFAULT_MONTHLY_BUDGET_USD),
+      sessionBudgetUsd: Number(
+        process.env['MAESTRO_SESSION_BUDGET_USD'] ?? DEFAULT_SESSION_BUDGET_USD,
+      ),
+      maxParallel: Number(process.env['MAESTRO_MAX_PARALLEL'] ?? DEFAULT_MAX_PARALLEL),
+      briefingTime: process.env['MAESTRO_BRIEFING_TIME'] ?? '08:00',
+    })
   })
 
   app.get('/api/projects', (c) => {
