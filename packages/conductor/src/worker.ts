@@ -318,6 +318,7 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
       baseBranch: project.autonomyConfig.branches.base,
       developerName: config.developerName,
       developerEmail: config.developerEmail ?? `${config.developerGithubUsername}@users.noreply.github.com`,
+      githubToken: config.githubToken,
     })
   }
 
@@ -574,13 +575,12 @@ async function runSessionInner(input: InnerInput): Promise<RunSessionOutput> {
   // store step (VAL-01: "Configuring credential.helper is not permitted"). For
   // local/test (file://) or token-less setups, fall back to the ambient origin.
   // The token is never persisted (no `-u`) and redacted from any error. ENG-07.
-  const pushRemote = authenticatedPushUrl(project.repoUrl, config.githubToken)
+  const pushRemote = authenticatedGitHubUrl(project.repoUrl, config.githubToken)
   try {
     await (pushRemote ? git.push([pushRemote, branch]) : git.push(['-u', 'origin', branch]))
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err)
-    const safe = config.githubToken ? raw.split(config.githubToken).join('***') : raw
-    throw new Error(`git push failed: ${safe}`)
+    throw new Error(`git push failed: ${redactToken(raw, config.githubToken)}`)
   }
 
   const githubClient =
@@ -719,20 +719,25 @@ function workingDirFor(dataDir: string, slug: string): string {
 }
 
 /**
- * Build a token-authenticated HTTPS push URL for a GitHub repo, or null when
- * there's no token or the remote isn't github.com HTTPS. Pushing to this URL
- * avoids git credential helpers — fragile on headless hosts and, since Git
- * 2.50, blocked when the push's credential *store* step runs a `!shell` helper
- * (surfaced by VAL-01 as "Configuring credential.helper is not permitted").
- * The token lives only in the transient push argument (never persisted via
- * `-u`, never logged — redacted on error), matching how GitHub Actions pushes
- * and the single-owner self-host threat model. ENG-07.
+ * Build a token-authenticated HTTPS URL for a GitHub repo — used for clone,
+ * fetch, AND push — or null when there's no token or the remote isn't
+ * github.com HTTPS. Using this URL avoids git credential helpers, which are
+ * fragile on headless hosts and, since Git 2.50, break the push credential
+ * *store* step (VAL-01: "Configuring credential.helper is not permitted"). The
+ * token lives only in the transient git argument — never persisted in
+ * .git/config (so the sandboxed agent can't read it) and never logged (see
+ * redactToken) — matching how GitHub Actions authenticates. ENG-07.
  */
-export function authenticatedPushUrl(repoUrl: string, token: string | undefined): string | null {
+export function authenticatedGitHubUrl(repoUrl: string, token: string | undefined): string | null {
   if (!token) return null
   const m = /^https:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(repoUrl.trim())
   if (!m) return null
   return `https://x-access-token:${token}@github.com/${m[1]}/${m[2]}.git`
+}
+
+/** Strip a token from a message before it reaches a log or thrown error. ENG-07. */
+function redactToken(msg: string, token: string | undefined): string {
+  return token ? msg.split(token).join('***') : msg
 }
 
 function sessionLogPath(dataDir: string, sessionId: string): string {
@@ -797,6 +802,7 @@ interface PrepareWorkingDirInput {
   baseBranch: string
   developerName: string
   developerEmail: string
+  githubToken?: string
 }
 
 // Build artefact directories that we deliberately keep across sessions
@@ -825,7 +831,20 @@ async function prepareWorkingDir(input: PrepareWorkingDirInput): Promise<void> {
   if (hasGit) {
     try {
       const git = simpleGit(input.workingRoot)
-      await git.fetch(['--all', '--prune'])
+      const authUrl = authenticatedGitHubUrl(input.repoUrl, input.githubToken)
+      try {
+        if (authUrl) {
+          // Transient token auth: fetch into origin/* without persisting the
+          // token in .git/config (the sandboxed agent runs in this clone).
+          await git.fetch([authUrl, '+refs/heads/*:refs/remotes/origin/*', '--prune'])
+        } else {
+          await git.fetch(['--all', '--prune'])
+        }
+      } catch (err) {
+        throw new Error(
+          redactToken(err instanceof Error ? err.message : String(err), input.githubToken),
+        )
+      }
       await git.checkout(input.baseBranch)
       await git.reset(['--hard', `origin/${input.baseBranch}`])
       // Clean only untracked source files; preserve cached build artefacts
@@ -844,15 +863,24 @@ async function prepareWorkingDir(input: PrepareWorkingDirInput): Promise<void> {
     await rm(input.workingRoot, { recursive: true, force: true })
   }
 
+  const cloneUrl = authenticatedGitHubUrl(input.repoUrl, input.githubToken) ?? input.repoUrl
   const git = simpleGit(dirname(input.workingRoot))
   try {
-    await git.clone(input.repoUrl, input.workingRoot, ['--branch', input.baseBranch])
+    await git.clone(cloneUrl, input.workingRoot, ['--branch', input.baseBranch])
   } catch (err) {
     throw new MaestroError('GIT_OPERATION_FAILED', {
-      message: `Failed to clone ${input.repoUrl}`,
-      cause: err,
+      message: `Failed to clone ${input.repoUrl}: ${redactToken(
+        err instanceof Error ? err.message : String(err),
+        input.githubToken,
+      )}`,
       context: { workingRoot: input.workingRoot, repoUrl: input.repoUrl },
     })
+  }
+  // Don't leave the token in the clone's origin URL — reset it to the clean
+  // repo URL so the sandboxed agent can't read it from .git/config; fetches
+  // re-authenticate transiently via authenticatedGitHubUrl. ENG-07.
+  if (cloneUrl !== input.repoUrl) {
+    await simpleGit(input.workingRoot).remote(['set-url', 'origin', input.repoUrl])
   }
   await configureGitIdentity(simpleGit(input.workingRoot), input.developerName, input.developerEmail)
 }

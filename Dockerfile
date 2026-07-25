@@ -68,15 +68,12 @@ RUN apt-get update \
 # date; `claude --version` is surfaced at /api/health/claude.
 RUN npm install -g @anthropic-ai/claude-code
 
-# System-wide git credential helper so the worker can push over HTTPS on a
-# headless host. It feeds GITHUB_TOKEN from the environment at push time —
-# the token is never written to disk, baked into the image, or placed in a
-# remote URL. Only processes whose env carries GITHUB_TOKEN (the conductor)
-# get a usable credential; a process without it (a sandboxed agent) gets an
-# empty password and cannot push. Responds only to `get` so store/erase are
-# no-ops.
-RUN git config --system credential.helper \
-  '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GITHUB_TOKEN"; }; f'
+# Git auth: the worker authenticates clone/fetch/push per-operation with a
+# token URL (https://x-access-token:$GITHUB_TOKEN@github.com/...), so NO git
+# credential helper is configured here. This is portable across Git versions
+# (Git 2.50 blocks the old `!shell` helper) and keeps the token out of the
+# sandboxed agent's reach — it is never persisted in a clone's .git/config.
+# See packages/conductor/src/worker.ts (authenticatedGitHubUrl / ENG-07).
 
 WORKDIR /app
 
