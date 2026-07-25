@@ -252,6 +252,9 @@ docker compose up -d --build
 - **Persistence:** the `maestro-data` volume holds the SQLite DB, working
   clones, and Claude creds at `/data`.
 
+On first load the dashboard shows a **setup checklist** that verifies auth,
+GitHub, and Claude are configured and walks you to your first project.
+
 For Railway and bare-VPS deploys, see [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md).
 
 ---
