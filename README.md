@@ -524,5 +524,5 @@ issues, and PRs welcome — but expect opinionated answers about scope.
 
 ## License
 
-TBD. The repo is currently source-available for review and discussion;
-licensing terms will be set when v1 ships.
+[Apache License 2.0](./LICENSE). You're free to self-host, modify, and
+redistribute Maestro — run your own instance on your own Claude subscription.
