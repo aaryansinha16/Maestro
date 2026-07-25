@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Conductor for your codebases — autonomous project management for solo developers",
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": ">=22"
