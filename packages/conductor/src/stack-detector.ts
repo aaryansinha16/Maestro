@@ -57,7 +57,10 @@ type NodeManager = 'pnpm' | 'npm' | 'yarn' | 'bun'
 function detectNodePackageManager(projectRoot: string): NodeManager {
   if (existsSync(join(projectRoot, 'pnpm-lock.yaml'))) return 'pnpm'
   if (existsSync(join(projectRoot, 'yarn.lock'))) return 'yarn'
-  if (existsSync(join(projectRoot, 'bun.lockb'))) return 'bun'
+  // Bun 1.1+ writes a text `bun.lock`; older versions the binary `bun.lockb`.
+  // Detect both so a Bun repo isn't misdetected as npm. ENG-16.
+  if (existsSync(join(projectRoot, 'bun.lockb')) || existsSync(join(projectRoot, 'bun.lock')))
+    return 'bun'
   return 'npm'
 }
 
